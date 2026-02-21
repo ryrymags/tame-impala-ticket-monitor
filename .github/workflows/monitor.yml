@@ -27,7 +27,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: state.json
-          key: monitor-state-${{ github.run_id }}
+          key: monitor-state-v1
           restore-keys: monitor-state-
 
       - name: Run check
@@ -41,4 +41,13 @@ jobs:
         if: always()
         with:
           path: state.json
-          key: monitor-state-${{ github.run_id }}
+          key: monitor-state-v1-${{ github.run_id }}
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          curl -s -H "Content-Type: application/json" \
+            -d "{\"username\": \"Ticket Monitor\", \"content\": \"<@206908742770360320>\", \"embeds\": [{\"title\": \"GitHub Actions Monitor Failed\", \"color\": 15158332, \"description\": \"The ticket monitor workflow failed. [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"footer\": {\"text\": \"Face Value Exchange Monitor\"}}]}" \
+            "$DISCORD_WEBHOOK_URL"

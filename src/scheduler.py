@@ -64,6 +64,7 @@ class MonitorScheduler:
         while self._running:
             try:
                 self._maybe_send_heartbeat()
+                self._maybe_send_recap()
                 self._run_cycle()
                 self._consecutive_errors = 0
                 self._current_backoff = 0.0
@@ -85,7 +86,7 @@ class MonitorScheduler:
 
             except RateLimitError as e:
                 logger.warning("Rate limited: %s", e)
-                self._current_backoff = max(e.retry_after, self.config.max_backoff_seconds)
+                self._current_backoff = min(e.retry_after, self.config.max_backoff_seconds)
                 self._consecutive_errors += 1
 
             except EventNotFoundError as e:
@@ -194,6 +195,11 @@ class MonitorScheduler:
                 event_cfg.name, len(matching), total_score,
             )
 
+            # Track for daily recap
+            self.state.record_daily_activity(
+                event_id, status.status_code.value, len(matching), total_score,
+            )
+
             # Check score threshold and cooldown
             if total_score >= self.config.score_threshold:
                 new_offer_ids = [o.offer_id for o in matching if self.state.is_offer_new(event_id, o.offer_id)]
@@ -214,6 +220,7 @@ class MonitorScheduler:
 
                     if self.notifier.send_ticket_alert(alert):
                         self.state.record_notification(event_id, [o.offer_id for o in matching])
+                        self.state.increment_daily_alerts(event_id)
                         logger.info("[%s] Discord alert sent (score %d)", event_cfg.name, total_score)
                     else:
                         logger.error("[%s] Failed to send Discord alert", event_cfg.name)
@@ -222,8 +229,19 @@ class MonitorScheduler:
                 else:
                     logger.debug("[%s] Cooldown active, skipping notification", event_cfg.name)
             else:
+                self.state.record_daily_activity(
+                    event_id, status.status_code.value, len(matching), total_score,
+                    filtered_reason=f"score {int(total_score)} below threshold {self.config.score_threshold}",
+                )
                 logger.debug("[%s] Score %d below threshold %d", event_cfg.name, total_score, self.config.score_threshold)
         else:
+            # Track no-offer status for daily recap
+            filtered_reason = None
+            if len(offers) > 0 and len(matching) == 0:
+                filtered_reason = "above max price"
+            self.state.record_daily_activity(
+                event_id, status.status_code.value, 0, 0, filtered_reason=filtered_reason,
+            )
             logger.debug("[%s] No matching offers", event_cfg.name)
 
         self.state.set_last_check(event_id)
@@ -274,7 +292,7 @@ class MonitorScheduler:
                     reasons.append(f"qty {offer.limit}+")
 
             offer.priority_score = score
-            offer._score_reasons = reasons  # type: ignore[attr-defined]
+            offer.score_reasons = reasons
             matching.append(offer)
 
         # Sort by score descending
@@ -286,8 +304,7 @@ class MonitorScheduler:
         if not offers:
             return []
         top = offers[0]
-        reasons = getattr(top, "_score_reasons", [])
-        return reasons if reasons else [f"score {int(top.priority_score)}"]
+        return top.score_reasons if top.score_reasons else [f"score {int(top.priority_score)}"]
 
     # ---- Scheduling helpers ----
 
@@ -337,4 +354,38 @@ class MonitorScheduler:
                 last_check=self._last_successful_check,
             )
             self.state.set_last_heartbeat_date(today_str)
+            self.state.prune_old_offers()
             logger.info("Daily heartbeat sent")
+
+    def _maybe_send_recap(self):
+        """Send a daily recap at the configured hour (default 11PM)."""
+        venue_tz = tz.gettz(self.config.timezone)
+        now = datetime.now(venue_tz)
+        today_str = now.strftime("%Y-%m-%d")
+
+        if self.state.get_last_recap_date() == today_str:
+            return  # Already sent today
+
+        if now.hour == self.config.daily_recap_hour:
+            activity = self.state.get_daily_activity()
+
+            # Build summaries for each monitored event
+            event_summaries = []
+            for event_cfg in self.config.events:
+                ev_activity = activity.get(event_cfg.event_id, {})
+                event_summaries.append({
+                    "name": event_cfg.name,
+                    "statuses_seen": ev_activity.get("statuses_seen", []),
+                    "total_offers": ev_activity.get("total_offers", 0),
+                    "best_score": ev_activity.get("best_score", 0),
+                    "alerts_sent": ev_activity.get("alerts_sent", 0),
+                    "filtered_reasons": ev_activity.get("filtered_reasons", []),
+                })
+
+            self.notifier.send_daily_recap(
+                event_summaries=event_summaries,
+                daily_calls=self.client.get_daily_call_count(),
+            )
+            self.state.set_last_recap_date(today_str)
+            self.state.reset_daily_activity()
+            logger.info("Daily recap sent")

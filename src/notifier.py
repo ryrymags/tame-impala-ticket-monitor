@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 COLOR_GREEN = 0x00FF00    # Score >= 140: "DROP EVERYTHING"
 COLOR_YELLOW = 0xFFFF00   # Score >= 60: "Good option"
 COLOR_ORANGE = 0xFF8C00   # Score >= 30: "Something available"
+COLOR_GREY = 0x95A5A6     # Score < 30: "Low priority"
 COLOR_BLUE = 0x3498DB      # Status change / informational
 COLOR_RED = 0xE74C3C       # Error or back to sold out
 
@@ -146,6 +147,46 @@ class DiscordNotifier:
 
         return self._send(embeds=[embed])
 
+    def send_daily_recap(self, event_summaries: list[dict], daily_calls: int) -> bool:
+        """Send a daily 11PM recap summarizing the day's monitoring activity."""
+        lines = []
+        for summary in event_summaries:
+            name = summary["name"]
+            statuses = summary.get("statuses_seen", ["unknown"])
+            current_status = statuses[-1] if statuses else "unknown"
+            offers = summary.get("total_offers", 0)
+            best_score = summary.get("best_score", 0)
+            alerts = summary.get("alerts_sent", 0)
+            filtered = summary.get("filtered_reasons", [])
+
+            if current_status == "offsale" and offers == 0:
+                lines.append(f"**{name}**: Still offsale. No tickets appeared today.")
+            elif offers > 0 and alerts > 0:
+                lines.append(
+                    f"**{name}**: Tickets appeared! "
+                    f"{alerts} alert(s) sent, best score **{int(best_score)}**."
+                )
+            elif offers > 0 and alerts == 0:
+                reason = ", ".join(filtered) if filtered else "didn't meet criteria"
+                lines.append(
+                    f"**{name}**: {offers} offer(s) seen but {reason}."
+                )
+            else:
+                lines.append(f"**{name}**: Status: **{current_status}**. No offers today.")
+
+        description = "\n".join(lines)
+        description += f"\n\nAPI calls used today: **{daily_calls}** / 5,000"
+
+        embed = {
+            "title": "Daily Recap",
+            "color": COLOR_BLUE,
+            "description": description,
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        return self._send(embeds=[embed], content="<@206908742770360320>")
+
     def send_error(self, message: str) -> bool:
         """Send an error notification."""
         embed = {
@@ -191,7 +232,7 @@ class DiscordNotifier:
             return COLOR_YELLOW
         elif score >= 30:
             return COLOR_ORANGE
-        return COLOR_ORANGE
+        return COLOR_GREY
 
     def _urgency_label(self, score: float) -> str:
         if score >= 140:
