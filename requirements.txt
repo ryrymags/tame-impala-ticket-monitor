@@ -1,0 +1,7 @@
+requests>=2.31.0
+pyyaml>=6.0
+python-dateutil>=2.8
+
+# Optional — for Tier 3 page checker (disabled by default)
+# beautifulsoup4>=4.12
+# lxml>=4.9
