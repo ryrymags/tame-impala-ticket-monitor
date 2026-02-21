@@ -66,7 +66,7 @@ class DiscordNotifier:
             "timestamp": alert.timestamp.isoformat(),
         }
 
-        return self._send(embeds=[embed])
+        return self._send(embeds=[embed], content="<@206908742770360320>")
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
                            old_status: str, new_status: str) -> bool:
@@ -88,7 +88,7 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed])
+        return self._send(embeds=[embed], content="<@206908742770360320>")
 
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
@@ -104,7 +104,7 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed])
+        return self._send(embeds=[embed], content="<@206908742770360320>")
 
     def send_heartbeat(self, daily_calls: int, uptime_hours: float,
                        last_check: Optional[datetime]) -> bool:
@@ -160,12 +160,14 @@ class DiscordNotifier:
 
     # ---- Internal ----
 
-    def _send(self, embeds: list[dict]) -> bool:
+    def _send(self, embeds: list[dict], content: str = "") -> bool:
         """Send a webhook payload to Discord."""
         payload = {
             "username": self.username,
             "embeds": embeds,
         }
+        if content:
+            payload["content"] = content
 
         try:
             resp = requests.post(self.webhook_url, json=payload, timeout=10)
