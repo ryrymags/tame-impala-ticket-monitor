@@ -129,6 +129,21 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     if tz.gettz(timezone_str) is None:
         errors.append(f"polling.timezone is invalid: {timezone_str!r}")
 
+    # Run all type conversions before checking errors, so all issues are reported at once
+    max_price = safe_float(prefs, "max_price", 175.0, "preferences.max_price")
+    daytime_interval_seconds = safe_int(polling, "daytime_interval_seconds", 90, "polling.daytime_interval_seconds")
+    overnight_interval_seconds = safe_int(polling, "overnight_interval_seconds", 300, "polling.overnight_interval_seconds")
+    daytime_start_hour = safe_int(polling, "daytime_start_hour", 8, "polling.daytime_start_hour")
+    daytime_end_hour = safe_int(polling, "daytime_end_hour", 1, "polling.daytime_end_hour")
+    backoff_multiplier = safe_float(polling, "backoff_multiplier", 1.5, "polling.backoff_multiplier")
+    max_backoff_seconds = safe_int(polling, "max_backoff_seconds", 600, "polling.max_backoff_seconds")
+    cooldown_minutes = safe_int(notif, "cooldown_minutes", 5, "notifications.cooldown_minutes")
+    score_threshold = safe_int(notif, "score_threshold", 30, "notifications.score_threshold")
+    daily_heartbeat_hour = safe_int(notif, "daily_heartbeat_hour", 9, "notifications.daily_heartbeat_hour")
+    page_check_interval_multiplier = safe_int(optional, "page_check_interval_multiplier", 5, "optional.page_check_interval_multiplier")
+    log_max_file_size_mb = safe_int(logging_cfg, "max_file_size_mb", 10, "logging.max_file_size_mb")
+    log_backup_count = safe_int(logging_cfg, "backup_count", 3, "logging.backup_count")
+
     if errors:
         print("Configuration errors:")
         for e in errors:
@@ -140,24 +155,24 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         discord_webhook_url=webhook_url,
         discord_username=discord.get("username", "Ticket Monitor"),
         events=events,
-        max_price=safe_float(prefs, "max_price", 175.0, "preferences.max_price"),
+        max_price=max_price,
         currency=prefs.get("currency", "USD"),
         preferred_sections=prefs.get("preferred_sections", ["General Admission", "LOGE", "Balcony"]),
-        daytime_interval_seconds=safe_int(polling, "daytime_interval_seconds", 90, "polling.daytime_interval_seconds"),
-        overnight_interval_seconds=safe_int(polling, "overnight_interval_seconds", 300, "polling.overnight_interval_seconds"),
-        daytime_start_hour=safe_int(polling, "daytime_start_hour", 8, "polling.daytime_start_hour"),
-        daytime_end_hour=safe_int(polling, "daytime_end_hour", 1, "polling.daytime_end_hour"),
-        backoff_multiplier=safe_float(polling, "backoff_multiplier", 1.5, "polling.backoff_multiplier"),
-        max_backoff_seconds=safe_int(polling, "max_backoff_seconds", 600, "polling.max_backoff_seconds"),
+        daytime_interval_seconds=daytime_interval_seconds,
+        overnight_interval_seconds=overnight_interval_seconds,
+        daytime_start_hour=daytime_start_hour,
+        daytime_end_hour=daytime_end_hour,
+        backoff_multiplier=backoff_multiplier,
+        max_backoff_seconds=max_backoff_seconds,
         timezone=timezone_str,
-        cooldown_minutes=safe_int(notif, "cooldown_minutes", 5, "notifications.cooldown_minutes"),
-        score_threshold=safe_int(notif, "score_threshold", 30, "notifications.score_threshold"),
+        cooldown_minutes=cooldown_minutes,
+        score_threshold=score_threshold,
         notify_on_status_change=bool(notif.get("notify_on_status_change", True)),
-        daily_heartbeat_hour=safe_int(notif, "daily_heartbeat_hour", 9, "notifications.daily_heartbeat_hour"),
+        daily_heartbeat_hour=daily_heartbeat_hour,
         enable_page_check=bool(optional.get("enable_page_check", False)),
-        page_check_interval_multiplier=safe_int(optional, "page_check_interval_multiplier", 5, "optional.page_check_interval_multiplier"),
+        page_check_interval_multiplier=page_check_interval_multiplier,
         log_level=logging_cfg.get("level", "INFO"),
         log_file=logging_cfg.get("file", "logs/monitor.log"),
-        log_max_file_size_mb=safe_int(logging_cfg, "max_file_size_mb", 10, "logging.max_file_size_mb"),
-        log_backup_count=safe_int(logging_cfg, "backup_count", 3, "logging.backup_count"),
+        log_max_file_size_mb=log_max_file_size_mb,
+        log_backup_count=log_backup_count,
     )
