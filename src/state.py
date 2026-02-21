@@ -34,16 +34,29 @@ class MonitorState:
 
     def is_offer_new(self, event_id: str, offer_id: str) -> bool:
         """True if we haven't notified about this offer yet."""
-        notified = self._event(event_id).get("notified_offer_ids", [])
-        return offer_id not in notified
+        ev = self._event(event_id)
+        notified = ev.get("notified_offers", {})
+        if isinstance(notified, dict):
+            return offer_id not in notified
+        # Fallback for legacy list format
+        return offer_id not in ev.get("notified_offer_ids", [])
 
     def record_notification(self, event_id: str, offer_ids: list[str]):
         """Mark offers as notified and update the notification timestamp."""
         ev = self._event(event_id)
-        existing = set(ev.get("notified_offer_ids", []))
-        existing.update(offer_ids)
-        ev["notified_offer_ids"] = list(existing)
-        ev["last_notification"] = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # Store offer IDs with timestamps for TTL-based pruning
+        notified = ev.get("notified_offers", {})
+        if not isinstance(notified, dict):
+            # Migrate from old list format to timestamped dict
+            notified = {oid: now_iso for oid in ev.get("notified_offer_ids", [])}
+        for oid in offer_ids:
+            notified[oid] = now_iso
+        ev["notified_offers"] = notified
+        # Keep legacy key in sync for backwards compatibility
+        ev["notified_offer_ids"] = list(notified.keys())
+        ev["last_notification"] = now_iso
         self.save()
 
     def can_notify(self, event_id: str, cooldown_minutes: int) -> bool:
@@ -82,6 +95,31 @@ class MonitorState:
         """Record the heartbeat date."""
         self._state["last_heartbeat_date"] = date_str
         self.save()
+
+    def prune_old_offers(self, max_age_days: int = 7):
+        """Remove notified offer IDs older than max_age_days to prevent unbounded growth."""
+        now = datetime.now(timezone.utc)
+        pruned_total = 0
+        for event_id, ev in self._state.get("events", {}).items():
+            notified = ev.get("notified_offers", {})
+            if not isinstance(notified, dict):
+                continue
+            to_remove = []
+            for oid, ts in notified.items():
+                try:
+                    recorded = datetime.fromisoformat(ts)
+                    if (now - recorded).days >= max_age_days:
+                        to_remove.append(oid)
+                except (ValueError, TypeError):
+                    to_remove.append(oid)  # Remove entries with bad timestamps
+            for oid in to_remove:
+                del notified[oid]
+            ev["notified_offers"] = notified
+            ev["notified_offer_ids"] = list(notified.keys())
+            pruned_total += len(to_remove)
+        if pruned_total > 0:
+            logger.info("Pruned %d old notified offer IDs", pruned_total)
+            self.save()
 
     # ---- Persistence ----
 

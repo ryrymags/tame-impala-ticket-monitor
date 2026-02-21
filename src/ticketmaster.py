@@ -90,10 +90,12 @@ class TicketmasterClient:
 
         try:
             data = self._request("GET", url, params=params)
+        except RateLimitError:
+            raise  # Don't swallow rate limits — let them bubble up
+        except AuthenticationError as e:
+            logger.debug("Commerce API not accessible (expected with free key): %s", e)
+            return []
         except APIError as e:
-            if "401" in str(e) or "403" in str(e):
-                logger.debug("Commerce API not accessible (expected with free key): %s", e)
-                return []
             raise
 
         offers = []
@@ -164,9 +166,9 @@ class TicketmasterClient:
                 retry_after=retry_after,
             )
         elif resp.status_code == 401:
-            raise APIError("Invalid API key (401). Check ticketmaster.api_key in config.yaml.")
+            raise AuthenticationError("Invalid API key (401). Check ticketmaster.api_key in config.yaml.")
         elif resp.status_code == 403:
-            raise APIError("Access forbidden (403). Your API key may be revoked or the endpoint restricted.")
+            raise AuthenticationError("Access forbidden (403). Your API key may be revoked or the endpoint restricted.")
         elif resp.status_code == 404:
             raise EventNotFoundError(f"Event not found (404) at {url}")
         elif resp.status_code >= 500:
@@ -288,6 +290,11 @@ class APIError(Exception):
 
 class NetworkError(Exception):
     """Network connectivity error — request never reached Ticketmaster."""
+    pass
+
+
+class AuthenticationError(APIError):
+    """HTTP 401/403 authentication or authorization error."""
     pass
 
 

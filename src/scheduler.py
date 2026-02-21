@@ -274,7 +274,7 @@ class MonitorScheduler:
                     reasons.append(f"qty {offer.limit}+")
 
             offer.priority_score = score
-            offer._score_reasons = reasons  # type: ignore[attr-defined]
+            offer.score_reasons = reasons
             matching.append(offer)
 
         # Sort by score descending
@@ -286,8 +286,7 @@ class MonitorScheduler:
         if not offers:
             return []
         top = offers[0]
-        reasons = getattr(top, "_score_reasons", [])
-        return reasons if reasons else [f"score {int(top.priority_score)}"]
+        return top.score_reasons if top.score_reasons else [f"score {int(top.priority_score)}"]
 
     # ---- Scheduling helpers ----
 
@@ -337,4 +336,5 @@ class MonitorScheduler:
                 last_check=self._last_successful_check,
             )
             self.state.set_last_heartbeat_date(today_str)
+            self.state.prune_old_offers()
             logger.info("Daily heartbeat sent")

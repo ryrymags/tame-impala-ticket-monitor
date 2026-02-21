@@ -51,6 +51,7 @@ class Offer:
     limit: Optional[int]           # max tickets per order
     raw_data: dict
     priority_score: float = 0.0
+    score_reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
