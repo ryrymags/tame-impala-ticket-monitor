@@ -96,6 +96,51 @@ class MonitorState:
         self._state["last_heartbeat_date"] = date_str
         self.save()
 
+    def get_last_recap_date(self) -> Optional[str]:
+        """Get the date of the last daily recap (YYYY-MM-DD)."""
+        return self._state.get("last_recap_date")
+
+    def set_last_recap_date(self, date_str: str):
+        """Record the recap date."""
+        self._state["last_recap_date"] = date_str
+        self.save()
+
+    def record_daily_activity(self, event_id: str, status: str, offer_count: int,
+                              best_score: float, filtered_reason: Optional[str] = None):
+        """Track what happened today for the daily recap."""
+        activity = self._state.setdefault("daily_activity", {})
+        ev_activity = activity.setdefault(event_id, {
+            "statuses_seen": [],
+            "total_offers": 0,
+            "best_score": 0,
+            "alerts_sent": 0,
+            "filtered_reasons": [],
+        })
+        if status not in ev_activity["statuses_seen"]:
+            ev_activity["statuses_seen"].append(status)
+        ev_activity["total_offers"] = max(ev_activity["total_offers"], offer_count)
+        ev_activity["best_score"] = max(ev_activity["best_score"], best_score)
+        if filtered_reason and filtered_reason not in ev_activity["filtered_reasons"]:
+            ev_activity["filtered_reasons"].append(filtered_reason)
+
+    def increment_daily_alerts(self, event_id: str):
+        """Track that an alert was sent for this event today."""
+        activity = self._state.setdefault("daily_activity", {})
+        ev_activity = activity.setdefault(event_id, {
+            "statuses_seen": [], "total_offers": 0, "best_score": 0,
+            "alerts_sent": 0, "filtered_reasons": [],
+        })
+        ev_activity["alerts_sent"] = ev_activity.get("alerts_sent", 0) + 1
+
+    def get_daily_activity(self) -> dict:
+        """Get the daily activity data."""
+        return self._state.get("daily_activity", {})
+
+    def reset_daily_activity(self):
+        """Reset daily activity tracking for a new day."""
+        self._state["daily_activity"] = {}
+        self.save()
+
     def prune_old_offers(self, max_age_days: int = 7):
         """Remove notified offer IDs older than max_age_days to prevent unbounded growth."""
         now = datetime.now(timezone.utc)

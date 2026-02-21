@@ -17,7 +17,7 @@ def _make_config(**overrides) -> MonitorConfig:
         daytime_interval_seconds=90, overnight_interval_seconds=300,
         daytime_start_hour=8, daytime_end_hour=1, backoff_multiplier=1.5,
         max_backoff_seconds=600, timezone="US/Eastern", cooldown_minutes=5,
-        score_threshold=30, notify_on_status_change=True, daily_heartbeat_hour=9,
+        score_threshold=30, notify_on_status_change=True, daily_heartbeat_hour=9, daily_recap_hour=23,
         enable_page_check=False, page_check_interval_multiplier=5,
         log_level="INFO", log_file="logs/test.log", log_max_file_size_mb=10,
         log_backup_count=3,

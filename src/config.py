@@ -48,6 +48,7 @@ class MonitorConfig:
     score_threshold: int
     notify_on_status_change: bool
     daily_heartbeat_hour: int
+    daily_recap_hour: int
 
     # Optional
     enable_page_check: bool
@@ -140,6 +141,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     cooldown_minutes = safe_int(notif, "cooldown_minutes", 5, "notifications.cooldown_minutes")
     score_threshold = safe_int(notif, "score_threshold", 30, "notifications.score_threshold")
     daily_heartbeat_hour = safe_int(notif, "daily_heartbeat_hour", 9, "notifications.daily_heartbeat_hour")
+    daily_recap_hour = safe_int(notif, "daily_recap_hour", 23, "notifications.daily_recap_hour")
     page_check_interval_multiplier = safe_int(optional, "page_check_interval_multiplier", 5, "optional.page_check_interval_multiplier")
     log_max_file_size_mb = safe_int(logging_cfg, "max_file_size_mb", 10, "logging.max_file_size_mb")
     log_backup_count = safe_int(logging_cfg, "backup_count", 3, "logging.backup_count")
@@ -169,6 +171,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         score_threshold=score_threshold,
         notify_on_status_change=bool(notif.get("notify_on_status_change", True)),
         daily_heartbeat_hour=daily_heartbeat_hour,
+        daily_recap_hour=daily_recap_hour,
         enable_page_check=bool(optional.get("enable_page_check", False)),
         page_check_interval_multiplier=page_check_interval_multiplier,
         log_level=logging_cfg.get("level", "INFO"),

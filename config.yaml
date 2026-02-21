@@ -77,6 +77,7 @@ notifications:
   score_threshold: 30
   notify_on_status_change: true     # Alert when event goes onsale/offsale
   daily_heartbeat_hour: 9           # Send daily heartbeat at 9 AM ET
+  daily_recap_hour: 23              # Send daily recap at 11 PM ET
 
 # ---- Optional Features ----
 # Page checker (Tier 3): Fetches the Ticketmaster event page HTML to extract
