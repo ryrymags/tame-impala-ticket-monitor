@@ -30,8 +30,11 @@ def setup_logging(log_level: str, log_file: str, max_mb: int, backup_count: int)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
 
+    # Allow --verbose to override the config file log level
+    effective_level = os.environ.get("LOG_LEVEL_OVERRIDE", log_level).upper()
+
     root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    root_logger.setLevel(getattr(logging, effective_level, logging.INFO))
 
     fmt = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -190,9 +193,6 @@ def main():
     if args.test:
         run_test(args.config)
     else:
-        if args.verbose:
-            # Temporarily set up logging for verbose mode before config loads
-            logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
         run_monitor(args.config, once=args.once)
 
 

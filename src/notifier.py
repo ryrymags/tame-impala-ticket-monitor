@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 COLOR_GREEN = 0x00FF00    # Score >= 140: "DROP EVERYTHING"
 COLOR_YELLOW = 0xFFFF00   # Score >= 60: "Good option"
 COLOR_ORANGE = 0xFF8C00   # Score >= 30: "Something available"
+COLOR_GREY = 0x95A5A6     # Score < 30: "Low priority"
 COLOR_BLUE = 0x3498DB      # Status change / informational
 COLOR_RED = 0xE74C3C       # Error or back to sold out
 
@@ -191,7 +192,7 @@ class DiscordNotifier:
             return COLOR_YELLOW
         elif score >= 30:
             return COLOR_ORANGE
-        return COLOR_ORANGE
+        return COLOR_GREY
 
     def _urgency_label(self, score: float) -> str:
         if score >= 140:

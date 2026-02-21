@@ -85,7 +85,7 @@ class MonitorScheduler:
 
             except RateLimitError as e:
                 logger.warning("Rate limited: %s", e)
-                self._current_backoff = max(e.retry_after, self.config.max_backoff_seconds)
+                self._current_backoff = min(e.retry_after, self.config.max_backoff_seconds)
                 self._consecutive_errors += 1
 
             except EventNotFoundError as e:
