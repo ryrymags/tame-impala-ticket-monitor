@@ -1,67 +1,25 @@
-name: Ticket Monitor
+name: Tests
 
 on:
-  schedule:
-    - cron: '*/2 * * * *'
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: 'Run mode'
-        required: false
-        default: 'check'
-        type: choice
-        options:
-          - check
-          - recap
+  push:
+    branches: [main]
+  pull_request:
 
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 3
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: 'pip'
 
       - name: Install dependencies
-        run: pip install requests pyyaml python-dateutil
+        run: pip install requests pyyaml python-dateutil pytest
 
-      - name: Download state
-        uses: actions/cache/restore@v4
-        with:
-          path: state.json
-          key: monitor-state-v1
-          restore-keys: monitor-state-
-
-      - name: Run check
-        env:
-          TM_API_KEY: ${{ secrets.TM_API_KEY }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          if [ "${{ inputs.mode }}" = "recap" ]; then
-            python monitor.py --recap
-          else
-            python monitor.py --once
-          fi
-
-      - name: Save state
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: state.json
-          key: monitor-state-v1-${{ github.run_id }}
-
-      - name: Notify on failure
-        if: failure()
-        env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: |
-          curl -s -H "Content-Type: application/json" \
-            -d "{\"username\": \"Ticket Monitor\", \"content\": \"<@206908742770360320>\", \"embeds\": [{\"title\": \"GitHub Actions Monitor Failed\", \"color\": 15158332, \"description\": \"The ticket monitor workflow failed. [View run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})\", \"footer\": {\"text\": \"Face Value Exchange Monitor\"}}]}" \
-            "$DISCORD_WEBHOOK_URL"
+      - name: Run tests
+        run: pytest tests/ -v

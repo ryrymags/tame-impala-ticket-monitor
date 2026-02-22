@@ -51,7 +51,7 @@ class MonitorScheduler:
         self._consecutive_errors = 0
         self._current_backoff = 0.0
         self._network_down = False
-        self._last_successful_check: Optional[datetime] = None
+        self._last_successful_check: Optional[datetime] = state.get_last_successful_check()
         self._last_persisted_call_count: int = 0
 
     def stop(self):
@@ -280,6 +280,7 @@ class MonitorScheduler:
 
         self.state.set_last_check(event_id)
         self._last_successful_check = datetime.now(timezone.utc)
+        self.state.set_last_successful_check()
 
     def _filter_and_score(self, offers: list[Offer]) -> list[Offer]:
         """Filter offers by max price and score by section/price/quantity preferences."""
@@ -381,7 +382,8 @@ class MonitorScheduler:
             return  # Already sent today
 
         if now.hour == self.config.daily_heartbeat_hour:
-            uptime_hours = (datetime.now(timezone.utc) - self.start_time).total_seconds() / 3600
+            monitor_started = self.state.get_monitor_start_time() or self.start_time
+            uptime_hours = (datetime.now(timezone.utc) - monitor_started).total_seconds() / 3600
             if self.notifier.send_heartbeat(
                 daily_calls=self.state.get_daily_api_calls(),
                 uptime_hours=uptime_hours,

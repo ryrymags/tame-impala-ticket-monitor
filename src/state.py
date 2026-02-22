@@ -87,6 +87,37 @@ class MonitorState:
         self._event(event_id)["last_check"] = datetime.now(timezone.utc).isoformat()
         self.save()
 
+    def get_last_successful_check(self) -> Optional[datetime]:
+        """Get the global last successful check timestamp (across all runs)."""
+        val = self._state.get("last_successful_check")
+        if val:
+            try:
+                return datetime.fromisoformat(val)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def set_last_successful_check(self):
+        """Record a global successful check timestamp."""
+        self._state["last_successful_check"] = datetime.now(timezone.utc).isoformat()
+        self.save()
+
+    def get_monitor_start_time(self) -> Optional[datetime]:
+        """Get the timestamp when monitoring first started."""
+        val = self._state.get("monitor_started")
+        if val:
+            try:
+                return datetime.fromisoformat(val)
+            except (ValueError, TypeError):
+                pass
+        return None
+
+    def set_monitor_start_time(self, dt: datetime):
+        """Record when monitoring first started (only sets once)."""
+        if "monitor_started" not in self._state:
+            self._state["monitor_started"] = dt.isoformat()
+            self.save()
+
     def get_last_heartbeat_date(self) -> Optional[str]:
         """Get the date of the last heartbeat (YYYY-MM-DD)."""
         return self._state.get("last_heartbeat_date")
