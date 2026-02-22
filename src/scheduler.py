@@ -52,6 +52,7 @@ class MonitorScheduler:
         self._current_backoff = 0.0
         self._network_down = False
         self._last_successful_check: Optional[datetime] = None
+        self._last_persisted_call_count: int = 0
 
     def stop(self):
         """Signal the loop to stop."""
@@ -66,6 +67,7 @@ class MonitorScheduler:
                 self._maybe_send_heartbeat()
                 self._maybe_send_recap()
                 self._run_cycle()
+                self._persist_api_calls()
                 self._consecutive_errors = 0
                 self._current_backoff = 0.0
 
@@ -125,6 +127,7 @@ class MonitorScheduler:
         self._maybe_send_heartbeat()
         self._maybe_send_recap()
         self._run_cycle()
+        self._persist_api_calls()
 
     def send_recap(self) -> bool:
         """Send the daily recap immediately, ignoring the hour check."""
@@ -144,8 +147,16 @@ class MonitorScheduler:
 
         return self.notifier.send_daily_recap(
             event_summaries=event_summaries,
-            daily_calls=self.client.get_daily_call_count(),
+            daily_calls=self.state.get_daily_api_calls(),
         )
+
+    def _persist_api_calls(self):
+        """Save new API calls from this run to persistent state."""
+        current = self.client.get_daily_call_count()
+        delta = current - self._last_persisted_call_count
+        if delta > 0:
+            self.state.add_daily_api_calls(delta)
+            self._last_persisted_call_count = current
 
     # ---- Core logic ----
 
@@ -372,7 +383,7 @@ class MonitorScheduler:
         if now.hour == self.config.daily_heartbeat_hour:
             uptime_hours = (datetime.now(timezone.utc) - self.start_time).total_seconds() / 3600
             if self.notifier.send_heartbeat(
-                daily_calls=self.client.get_daily_call_count(),
+                daily_calls=self.state.get_daily_api_calls(),
                 uptime_hours=uptime_hours,
                 last_check=self._last_successful_check,
             ):
@@ -409,7 +420,7 @@ class MonitorScheduler:
 
             if self.notifier.send_daily_recap(
                 event_summaries=event_summaries,
-                daily_calls=self.client.get_daily_call_count(),
+                daily_calls=self.state.get_daily_api_calls(),
             ):
                 self.state.set_last_recap_date(today_str)
                 self.state.reset_daily_activity()

@@ -105,6 +105,24 @@ class MonitorState:
         self._state["last_recap_date"] = date_str
         self.save()
 
+    def get_daily_api_calls(self) -> int:
+        """Get the accumulated API call count for today."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._state.get("daily_api_date") != today:
+            # New day — reset
+            self._state["daily_api_calls"] = 0
+            self._state["daily_api_date"] = today
+        return self._state.get("daily_api_calls", 0)
+
+    def add_daily_api_calls(self, count: int):
+        """Add API calls from this run to the persisted daily total."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._state.get("daily_api_date") != today:
+            self._state["daily_api_calls"] = 0
+            self._state["daily_api_date"] = today
+        self._state["daily_api_calls"] = self._state.get("daily_api_calls", 0) + count
+        self.save()
+
     def record_daily_activity(self, event_id: str, status: str, offer_count: int,
                               best_score: float, filtered_reason: Optional[str] = None):
         """Track what happened today for the daily recap."""
