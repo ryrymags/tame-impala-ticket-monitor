@@ -348,14 +348,16 @@ class MonitorScheduler:
 
         if now.hour == self.config.daily_heartbeat_hour:
             uptime_hours = (datetime.now(timezone.utc) - self.start_time).total_seconds() / 3600
-            self.notifier.send_heartbeat(
+            if self.notifier.send_heartbeat(
                 daily_calls=self.client.get_daily_call_count(),
                 uptime_hours=uptime_hours,
                 last_check=self._last_successful_check,
-            )
-            self.state.set_last_heartbeat_date(today_str)
-            self.state.prune_old_offers()
-            logger.info("Daily heartbeat sent")
+            ):
+                self.state.set_last_heartbeat_date(today_str)
+                self.state.prune_old_offers()
+                logger.info("Daily heartbeat sent")
+            else:
+                logger.error("Failed to send daily heartbeat — will retry next cycle")
 
     def _maybe_send_recap(self):
         """Send a daily recap at the configured hour (default 11PM)."""
@@ -382,10 +384,12 @@ class MonitorScheduler:
                     "filtered_reasons": ev_activity.get("filtered_reasons", []),
                 })
 
-            self.notifier.send_daily_recap(
+            if self.notifier.send_daily_recap(
                 event_summaries=event_summaries,
                 daily_calls=self.client.get_daily_call_count(),
-            )
-            self.state.set_last_recap_date(today_str)
-            self.state.reset_daily_activity()
-            logger.info("Daily recap sent")
+            ):
+                self.state.set_last_recap_date(today_str)
+                self.state.reset_daily_activity()
+                logger.info("Daily recap sent")
+            else:
+                logger.error("Failed to send daily recap — will retry next cycle")
