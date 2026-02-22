@@ -122,6 +122,8 @@ class MonitorScheduler:
 
     def run_once(self):
         """Run a single check cycle and return (for --once mode)."""
+        self._maybe_send_heartbeat()
+        self._maybe_send_recap()
         self._run_cycle()
 
     def send_recap(self) -> bool:
