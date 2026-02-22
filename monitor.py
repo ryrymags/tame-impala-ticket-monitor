@@ -166,6 +166,7 @@ def run_monitor(config_path: str, once: bool = False):
     notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
     state = MonitorState()
     start_time = datetime.now(timezone.utc)
+    state.set_monitor_start_time(start_time)  # Records only on first-ever run
 
     scheduler = MonitorScheduler(
         config=config,
