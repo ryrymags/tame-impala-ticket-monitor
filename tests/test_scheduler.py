@@ -177,3 +177,43 @@ class TestBuildScoreReasons:
         offer.priority_score = 42
         result = scheduler._build_score_reasons([offer])
         assert result == ["score 42"]
+
+
+class TestPersistApiCalls:
+    def test_persist_adds_delta_to_state(self):
+        scheduler = _make_scheduler()
+        scheduler.client.get_daily_call_count.return_value = 4
+        scheduler._persist_api_calls()
+        scheduler.state.add_daily_api_calls.assert_called_once_with(4)
+
+    def test_persist_tracks_delta_across_cycles(self):
+        scheduler = _make_scheduler()
+        scheduler.client.get_daily_call_count.return_value = 4
+        scheduler._persist_api_calls()
+
+        scheduler.client.get_daily_call_count.return_value = 8
+        scheduler._persist_api_calls()
+        # Second call should only add the delta (8 - 4 = 4)
+        assert scheduler.state.add_daily_api_calls.call_args_list[-1].args == (4,)
+
+    def test_persist_skips_zero_delta(self):
+        scheduler = _make_scheduler()
+        scheduler.client.get_daily_call_count.return_value = 0
+        scheduler._persist_api_calls()
+        scheduler.state.add_daily_api_calls.assert_not_called()
+
+    def test_send_recap_uses_state_api_calls(self):
+        config = _make_config(events=[
+            EventConfig(event_id="e1", name="Night 1", date="2026-09-01",
+                        url="http://test"),
+        ])
+        scheduler = _make_scheduler(config)
+        scheduler.state.get_daily_activity.return_value = {}
+        scheduler.state.get_daily_api_calls.return_value = 120
+        scheduler.notifier.send_daily_recap.return_value = True
+
+        scheduler.send_recap()
+        # Verify it used the state count (120), not the client count
+        scheduler.notifier.send_daily_recap.assert_called_once()
+        _, kwargs = scheduler.notifier.send_daily_recap.call_args
+        assert kwargs["daily_calls"] == 120

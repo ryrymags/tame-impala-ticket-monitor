@@ -153,3 +153,30 @@ class TestPruneOldOffers:
 
         state.prune_old_offers(max_age_days=7)
         assert state.is_offer_new("event-1", "bad-offer") is True
+
+
+class TestDailyApiCalls:
+    def test_initial_api_calls_is_zero(self, state):
+        assert state.get_daily_api_calls() == 0
+
+    def test_add_and_get_api_calls(self, state):
+        state.add_daily_api_calls(4)
+        assert state.get_daily_api_calls() == 4
+
+    def test_accumulates_across_adds(self, state):
+        state.add_daily_api_calls(4)
+        state.add_daily_api_calls(4)
+        assert state.get_daily_api_calls() == 8
+
+    def test_persists_across_instances(self, state_file):
+        state1 = MonitorState(state_file=state_file)
+        state1.add_daily_api_calls(10)
+
+        state2 = MonitorState(state_file=state_file)
+        assert state2.get_daily_api_calls() == 10
+
+    def test_resets_on_new_day(self, state):
+        state.add_daily_api_calls(100)
+        # Simulate yesterday's date
+        state._state["daily_api_date"] = "2020-01-01"
+        assert state.get_daily_api_calls() == 0
