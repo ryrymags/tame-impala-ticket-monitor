@@ -6,6 +6,7 @@ Usage:
     python3 monitor.py --test       # Validate config, API key, and Discord webhook
     python3 monitor.py --once       # Run one check cycle and exit
     python3 monitor.py --recap      # Send daily recap to Discord now
+    python3 monitor.py --heartbeat  # Send heartbeat to Discord now
     python3 monitor.py --verbose    # Override log level to DEBUG
     python3 monitor.py --config /path/to/config.yaml
 """
@@ -155,6 +156,28 @@ def run_recap(config_path: str):
         sys.exit(1)
 
 
+def run_heartbeat(config_path: str):
+    """Send a heartbeat to Discord immediately."""
+    config = load_config(config_path)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    state = MonitorState()
+
+    monitor_started = state.get_monitor_start_time() or datetime.now(timezone.utc)
+    uptime_hours = (datetime.now(timezone.utc) - monitor_started).total_seconds() / 3600
+    last_check = state.get_last_successful_check()
+
+    print("Sending heartbeat...")
+    if notifier.send_heartbeat(
+        daily_calls=state.get_daily_api_calls(),
+        uptime_hours=uptime_hours,
+        last_check=last_check,
+    ):
+        print("Heartbeat sent — check your Discord channel!")
+    else:
+        print("Failed to send heartbeat. Check webhook URL and logs.")
+        sys.exit(1)
+
+
 def run_monitor(config_path: str, once: bool = False):
     """Start the monitoring loop."""
     config = load_config(config_path)
@@ -209,6 +232,7 @@ def main():
     parser.add_argument("--test", action="store_true", help="Validate config, API key, and Discord webhook")
     parser.add_argument("--once", action="store_true", help="Run one check cycle and exit")
     parser.add_argument("--recap", action="store_true", help="Send daily recap to Discord now and exit")
+    parser.add_argument("--heartbeat", action="store_true", help="Send heartbeat to Discord now and exit")
     parser.add_argument("--config", default="config.yaml", help="Path to config file (default: config.yaml)")
     parser.add_argument("--verbose", action="store_true", help="Override log level to DEBUG")
     args = parser.parse_args()
@@ -220,6 +244,8 @@ def main():
         run_test(args.config)
     elif args.recap:
         run_recap(args.config)
+    elif args.heartbeat:
+        run_heartbeat(args.config)
     else:
         run_monitor(args.config, once=args.once)
 

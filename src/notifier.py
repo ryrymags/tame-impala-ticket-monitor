@@ -71,7 +71,7 @@ class DiscordNotifier:
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
                            old_status: str, new_status: str) -> bool:
-        """Notify when an event's status changes."""
+        """Notify when an event's status changes. Mentions user only for onsale."""
         embed = {
             "title": f"Status Change: {event_name}",
             "url": event_url,
@@ -89,7 +89,9 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed], content="<@206908742770360320>")
+        # Only ping for onsale — that's when tickets are available
+        mention = "<@206908742770360320>" if new_status == "onsale" else ""
+        return self._send(embeds=[embed], content=mention)
 
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
@@ -105,7 +107,7 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed], content="<@206908742770360320>")
+        return self._send(embeds=[embed])
 
     def send_heartbeat(self, daily_calls: int, uptime_hours: float,
                        last_check: Optional[datetime]) -> bool:
@@ -185,7 +187,7 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed], content="<@206908742770360320>")
+        return self._send(embeds=[embed])
 
     def send_error(self, message: str) -> bool:
         """Send an error notification."""
