@@ -122,7 +122,30 @@ class MonitorScheduler:
 
     def run_once(self):
         """Run a single check cycle and return (for --once mode)."""
+        self._maybe_send_heartbeat()
+        self._maybe_send_recap()
         self._run_cycle()
+
+    def send_recap(self) -> bool:
+        """Send the daily recap immediately, ignoring the hour check."""
+        activity = self.state.get_daily_activity()
+
+        event_summaries = []
+        for event_cfg in self.config.events:
+            ev_activity = activity.get(event_cfg.event_id, {})
+            event_summaries.append({
+                "name": event_cfg.name,
+                "statuses_seen": ev_activity.get("statuses_seen", []),
+                "total_offers": ev_activity.get("total_offers", 0),
+                "best_score": ev_activity.get("best_score", 0),
+                "alerts_sent": ev_activity.get("alerts_sent", 0),
+                "filtered_reasons": ev_activity.get("filtered_reasons", []),
+            })
+
+        return self.notifier.send_daily_recap(
+            event_summaries=event_summaries,
+            daily_calls=self.client.get_daily_call_count(),
+        )
 
     # ---- Core logic ----
 
@@ -348,14 +371,16 @@ class MonitorScheduler:
 
         if now.hour == self.config.daily_heartbeat_hour:
             uptime_hours = (datetime.now(timezone.utc) - self.start_time).total_seconds() / 3600
-            self.notifier.send_heartbeat(
+            if self.notifier.send_heartbeat(
                 daily_calls=self.client.get_daily_call_count(),
                 uptime_hours=uptime_hours,
                 last_check=self._last_successful_check,
-            )
-            self.state.set_last_heartbeat_date(today_str)
-            self.state.prune_old_offers()
-            logger.info("Daily heartbeat sent")
+            ):
+                self.state.set_last_heartbeat_date(today_str)
+                self.state.prune_old_offers()
+                logger.info("Daily heartbeat sent")
+            else:
+                logger.error("Failed to send daily heartbeat — will retry next cycle")
 
     def _maybe_send_recap(self):
         """Send a daily recap at the configured hour (default 11PM)."""
@@ -382,10 +407,12 @@ class MonitorScheduler:
                     "filtered_reasons": ev_activity.get("filtered_reasons", []),
                 })
 
-            self.notifier.send_daily_recap(
+            if self.notifier.send_daily_recap(
                 event_summaries=event_summaries,
                 daily_calls=self.client.get_daily_call_count(),
-            )
-            self.state.set_last_recap_date(today_str)
-            self.state.reset_daily_activity()
-            logger.info("Daily recap sent")
+            ):
+                self.state.set_last_recap_date(today_str)
+                self.state.reset_daily_activity()
+                logger.info("Daily recap sent")
+            else:
+                logger.error("Failed to send daily recap — will retry next cycle")

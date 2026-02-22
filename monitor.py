@@ -5,6 +5,7 @@ Usage:
     python3 monitor.py              # Start monitoring
     python3 monitor.py --test       # Validate config, API key, and Discord webhook
     python3 monitor.py --once       # Run one check cycle and exit
+    python3 monitor.py --recap      # Send daily recap to Discord now
     python3 monitor.py --verbose    # Override log level to DEBUG
     python3 monitor.py --config /path/to/config.yaml
 """
@@ -131,6 +132,29 @@ def run_test(config_path: str):
     print("Run 'python3 monitor.py' to start monitoring.")
 
 
+def run_recap(config_path: str):
+    """Send the daily recap to Discord immediately."""
+    config = load_config(config_path)
+    client = TicketmasterClient(config.api_key)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    state = MonitorState()
+
+    scheduler = MonitorScheduler(
+        config=config,
+        client=client,
+        notifier=notifier,
+        state=state,
+        start_time=datetime.now(timezone.utc),
+    )
+
+    print("Sending daily recap...")
+    if scheduler.send_recap():
+        print("Daily recap sent — check your Discord channel!")
+    else:
+        print("Failed to send recap. Check webhook URL and logs.")
+        sys.exit(1)
+
+
 def run_monitor(config_path: str, once: bool = False):
     """Start the monitoring loop."""
     config = load_config(config_path)
@@ -183,6 +207,7 @@ def main():
     parser = argparse.ArgumentParser(description="Tame Impala Face Value Exchange Monitor")
     parser.add_argument("--test", action="store_true", help="Validate config, API key, and Discord webhook")
     parser.add_argument("--once", action="store_true", help="Run one check cycle and exit")
+    parser.add_argument("--recap", action="store_true", help="Send daily recap to Discord now and exit")
     parser.add_argument("--config", default="config.yaml", help="Path to config file (default: config.yaml)")
     parser.add_argument("--verbose", action="store_true", help="Override log level to DEBUG")
     args = parser.parse_args()
@@ -192,6 +217,8 @@ def main():
 
     if args.test:
         run_test(args.config)
+    elif args.recap:
+        run_recap(args.config)
     else:
         run_monitor(args.config, once=args.once)
 

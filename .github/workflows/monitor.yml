@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '*/2 * * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: false
+        default: 'check'
+        type: choice
+        options:
+          - check
+          - recap
 
 jobs:
   check:
@@ -34,7 +43,12 @@ jobs:
         env:
           TM_API_KEY: ${{ secrets.TM_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python monitor.py --once
+        run: |
+          if [ "${{ inputs.mode }}" = "recap" ]; then
+            python monitor.py --recap
+          else
+            python monitor.py --once
+          fi
 
       - name: Save state
         uses: actions/cache/save@v4
