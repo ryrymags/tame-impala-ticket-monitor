@@ -68,7 +68,6 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     tm = raw.get("ticketmaster", {})
     discord = raw.get("discord", {})
     events_raw = raw.get("events", [])
-    prefs = raw.get("preferences", {})
     polling = raw.get("polling", {})
     notif = raw.get("notifications", {})
     optional = raw.get("optional", {})

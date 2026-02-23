@@ -1,8 +1,5 @@
 """Tests for config loading and validation."""
 
-import os
-import tempfile
-
 import pytest
 import yaml
 
