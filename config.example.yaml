@@ -20,7 +20,7 @@ ticketmaster:
 #   3. Click "New Webhook", name it, pick a channel
 #   4. Click "Copy Webhook URL" and paste below
 discord:
-  webhook_url: "OUR_WEBHOOK_URL_HERE"
+  webhook_url: "YOUR_WEBHOOK_URL_HERE"
   username: "Ticketmaster"         # Display name in Discord
 
 # ---- Events to Monitor ----

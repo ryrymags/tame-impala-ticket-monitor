@@ -2,8 +2,7 @@
 
 import os
 import sys
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import yaml
 from dateutil import tz

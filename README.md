@@ -4,7 +4,7 @@ Automated monitor that checks Ticketmaster for Face Value Exchange resale ticket
 
 ## What This Does
 
-Both shows (July 28 & 29, 2026) are sold out. Ticketmaster's **Face Value Exchange** allows original buyers to resell their tickets at face value through Ticketmaster's official platform — no scalper markups. This monitor polls the Ticketmaster Discovery API every 2 minutes looking for:
+Both shows (July 28 & 29, 2026) are sold out. Ticketmaster's **Face Value Exchange** allows original buyers to resell their tickets at face value through Ticketmaster's official platform — no scalper markups. This monitor polls the Ticketmaster Discovery API continuously (every 90 seconds during active hours) looking for:
 
 - Status changes (e.g., `offsale` → `onsale`, which signals resale listings may have appeared)
 - Price range data appearing on previously sold-out events
@@ -84,10 +84,14 @@ Two-tier polling based on time of day (US/Eastern timezone):
 ## File Structure
 
 ```
-tame-impala-monitor/
+tame-impala-ticket-monitor/
 ├── .github/
 │   └── workflows/
-│       └── monitor.yml          # GitHub Actions cron workflow
+│       ├── monitor.yml          # CI: runs test suite on PRs and pushes to main
+│       ├── deploy.yml           # CD: SSH deploys to Oracle VM and restarts service
+│       └── auto-merge.yml       # Squash-merges claude/** branches to main, triggers deploy
+├── deploy/
+│   └── setup.sh                 # One-time VM setup script (venv, deps, systemd service)
 ├── src/
 │   ├── __init__.py              # Package marker
 │   ├── config.py                # YAML config loader with env var overrides
@@ -97,31 +101,45 @@ tame-impala-monitor/
 │   ├── scheduler.py             # Main monitoring loop, scoring, adaptive intervals
 │   ├── state.py                 # JSON state persistence (tracks seen offers, status)
 │   └── ticketmaster.py          # Discovery + Commerce API client, rate limiting
+├── tests/                       # pytest test suite
 ├── .gitignore
-├── config.yaml                  # All configuration (API key, webhook, preferences)
-├── monitor.py                   # Entry point (--test, --once, --verbose flags)
+├── config.example.yaml          # Template config (copy to config.yaml and fill in values)
+├── monitor.py                   # Entry point (--test, --once, --recap, --heartbeat, --verbose)
+├── pyproject.toml               # Project metadata and ruff/pytest config
 ├── requirements.txt             # Python dependencies
 └── README.md                    # This file
 ```
 
 ## How It Runs
 
-### GitHub Actions (Production)
+### Production (Oracle VM + systemd)
 
-The workflow (`.github/workflows/monitor.yml`) runs every 2 minutes via cron:
+The monitor runs as a persistent `systemd` service on an Oracle Cloud free-tier VM:
 
-1. Checks out the repo
-2. Sets up Python 3.12
-3. Installs dependencies (`requests`, `pyyaml`, `python-dateutil`)
-4. Restores `state.json` from GitHub Actions cache (persists between runs)
-5. Runs `python monitor.py --once` (single check cycle)
-6. Saves updated `state.json` back to cache
+1. `monitor.py` runs continuously, polling in a loop with adaptive intervals (90s daytime / 5min overnight)
+2. `state.json` is stored on disk — survives restarts, tracks seen offers and last statuses
+3. Logs go to `journald` (`sudo journalctl -u ticket-monitor -f`)
+
+**Deploy pipeline:**
+- Push to a `claude/**` branch → `auto-merge.yml` squash-merges to `main`
+- Push to `main` → `deploy.yml` SSH's into the VM, runs `git pull`, reinstalls deps, and restarts the service
+- `monitor.yml` runs the `pytest` test suite on every PR and push to `main`
 
 **Secrets** are stored in GitHub repo Settings → Secrets:
 - `TM_API_KEY` — Ticketmaster Consumer Key
 - `DISCORD_WEBHOOK_URL` — Discord webhook URL
+- `VM_HOST`, `VM_USER`, `VM_SSH_KEY` — SSH credentials for the Oracle VM
 
-These override the values in `config.yaml` via environment variables (see `src/config.py`).
+`TM_API_KEY` and `DISCORD_WEBHOOK_URL` override `config.yaml` values via environment variables (see `src/config.py`). On the VM, `config.yaml` holds the actual values directly.
+
+**First-time VM setup:**
+```bash
+git clone https://github.com/ryrymags/tame-impala-ticket-monitor
+cd tame-impala-ticket-monitor
+cp config.example.yaml config.yaml
+nano config.yaml  # fill in API key and webhook URL
+bash deploy/setup.sh
+```
 
 ### Local Usage
 
@@ -163,9 +181,7 @@ The monitor persists state to `state.json` (excluded from git via `.gitignore`):
 - **Last heartbeat date** — ensures only one heartbeat per day
 - **Last check timestamp** — reported in heartbeat messages
 
-State is saved atomically (write to temp file, then `os.replace`) to prevent corruption.
-
-On GitHub Actions, state is persisted between runs using `actions/cache` with run-specific keys and `restore-keys` prefix matching.
+State is saved atomically (write to temp file, then `os.replace`) to prevent corruption. On the VM, `state.json` lives on disk and persists across service restarts automatically.
 
 ## Error Handling
 
@@ -186,6 +202,5 @@ All are standard, well-maintained Python packages. No Selenium, Playwright, or b
 ## Limitations
 
 - The **Commerce API** (detailed offer data) requires partner-level API access, which is not available with free Consumer Keys. The monitor works with the Discovery API alone, but can only detect status changes and price range appearances rather than individual ticket listings.
-- **GitHub Actions cron** has a minimum granularity of 1 minute and may have delays of 30-60 seconds. Actual check frequency averages every ~2-3 minutes.
-- **Face Value Exchange** listings may appear and disappear quickly. The 2-minute polling interval means there could be a window where tickets are posted and sold before the next check.
+- **Face Value Exchange** listings may appear and disappear quickly. The 90-second polling interval means there could be a window where tickets are posted and sold before the next check.
 - The **page checker** (Tier 3) may be blocked by Ticketmaster's anti-bot/anti-scraping systems and is disabled by default.
