@@ -20,8 +20,7 @@ jobs:
           script: |
             cd ~/tame-impala-ticket-monitor
             git pull origin main
-            source venv/bin/activate
-            pip install -q -r requirements.txt
+            venv/bin/pip install -q -r requirements.txt
             sudo systemctl restart ticket-monitor
             sleep 2
             sudo systemctl is-active ticket-monitor
