@@ -22,8 +22,15 @@ jobs:
             git pull origin main
             venv/bin/pip install -q -r requirements.txt
             sudo systemctl restart ticket-monitor
-            sleep 2
-            sudo systemctl is-active ticket-monitor
+            for i in 1 2 3 4 5; do
+              sleep 3
+              STATUS=$(sudo systemctl is-active ticket-monitor)
+              echo "Attempt $i: $STATUS"
+              [ "$STATUS" = "active" ] && exit 0
+            done
+            echo "Service failed to start"
+            sudo journalctl -u ticket-monitor --no-pager -n 20
+            exit 1
 
       - name: Notify on failure
         if: failure()
