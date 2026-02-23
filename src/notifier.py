@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from dateutil import tz
+
 import requests
 
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ class DiscordNotifier:
     def send_heartbeat(self, daily_calls: int, uptime_hours: float,
                        last_check: Optional[datetime]) -> bool:
         """Send a daily heartbeat to confirm the monitor is alive."""
-        last_check_str = last_check.strftime("%I:%M %p ET") if last_check else "Never"
+        last_check_str = last_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET") if last_check else "Never"
         daily_reset = "Midnight UTC"
 
         embed = {
