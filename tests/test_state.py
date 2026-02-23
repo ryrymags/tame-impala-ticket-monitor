@@ -121,6 +121,31 @@ class TestLastCheck:
         assert isinstance(result, datetime)
 
 
+class TestPriceRangeTracking:
+    def test_initial_had_price_ranges_is_none(self, state):
+        assert state.get_had_price_ranges("event-1") is None
+
+    def test_set_true_and_get(self, state):
+        state.set_had_price_ranges("event-1", True)
+        assert state.get_had_price_ranges("event-1") is True
+
+    def test_set_false_and_get(self, state):
+        state.set_had_price_ranges("event-1", False)
+        assert state.get_had_price_ranges("event-1") is False
+
+    def test_persists_across_instances(self, state_file):
+        state1 = MonitorState(state_file=state_file)
+        state1.set_had_price_ranges("event-1", True)
+        state2 = MonitorState(state_file=state_file)
+        assert state2.get_had_price_ranges("event-1") is True
+
+    def test_independent_per_event(self, state):
+        state.set_had_price_ranges("event-1", True)
+        state.set_had_price_ranges("event-2", False)
+        assert state.get_had_price_ranges("event-1") is True
+        assert state.get_had_price_ranges("event-2") is False
+
+
 class TestHeartbeat:
     def test_initial_heartbeat_is_none(self, state):
         assert state.get_last_heartbeat_date() is None

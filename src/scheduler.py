@@ -212,6 +212,21 @@ class MonitorScheduler:
 
         self.state.set_last_status(event_id, status.status_code.value)
 
+        # Detect price range appearances — catches cases where Ticketmaster doesn't
+        # flip the status code but FVE listings show up with price data
+        has_ranges = len(status.price_ranges) > 0
+        had_ranges = self.state.get_had_price_ranges(event_id)
+        if had_ranges is False and has_ranges:
+            # Price ranges appeared where there were none before
+            mins = [p.min_price for p in status.price_ranges if p.min_price is not None]
+            maxs = [p.max_price for p in status.price_ranges if p.max_price is not None]
+            if mins and maxs:
+                logger.info("[%s] Price ranges appeared: $%.0f – $%.0f", event_cfg.name, min(mins), max(maxs))
+                self.notifier.send_price_range_appeared(
+                    event_cfg.name, event_cfg.date, event_url, min(mins), max(maxs),
+                )
+        self.state.set_had_price_ranges(event_id, has_ranges)
+
         # Tier 2: Commerce API — offers (always run, don't gate on status)
         offers = self.client.get_event_offers(event_id)
         logger.info("[%s] Offers found: %d", event_cfg.name, len(offers))

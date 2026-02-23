@@ -32,6 +32,18 @@ class MonitorState:
         old = self.get_last_status(event_id)
         return old is not None and old != new_status
 
+    def get_had_price_ranges(self, event_id: str) -> Optional[bool]:
+        """Return True/False based on whether price ranges were present last check, or None if never checked."""
+        val = self._event(event_id).get("had_price_ranges")
+        if val is None:
+            return None
+        return bool(val)
+
+    def set_had_price_ranges(self, event_id: str, had_ranges: bool):
+        """Record whether the event had price ranges in the last check."""
+        self._event(event_id)["had_price_ranges"] = had_ranges
+        self.save()
+
     def is_offer_new(self, event_id: str, offer_id: str) -> bool:
         """True if we haven't notified about this offer yet."""
         ev = self._event(event_id)

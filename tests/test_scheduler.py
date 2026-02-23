@@ -2,10 +2,10 @@
 
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 from src.config import MonitorConfig, EventConfig
-from src.models import Offer, EventStatus, EventStatusCode
+from src.models import Offer, EventStatus, EventStatusCode, PriceRange
 from src.scheduler import MonitorScheduler, SCORE_GA, SCORE_LOGE, SCORE_BALCONY, SCORE_UNDER_100, SCORE_QTY_4_PLUS, SCORE_QTY_2_PLUS
 
 
@@ -217,3 +217,95 @@ class TestPersistApiCalls:
         scheduler.notifier.send_daily_recap.assert_called_once()
         _, kwargs = scheduler.notifier.send_daily_recap.call_args
         assert kwargs["daily_calls"] == 120
+
+
+def _make_event_status(status_code=EventStatusCode.OFFSALE, price_ranges=None) -> EventStatus:
+    return EventStatus(
+        event_id="test-event",
+        status_code=status_code,
+        price_ranges=price_ranges or [],
+        event_url="https://ticketmaster.com/event/test",
+        raw_response={},
+    )
+
+
+def _make_event_cfg() -> EventConfig:
+    return EventConfig(
+        event_id="test-event",
+        name="Test Event",
+        date="2026-07-28",
+        url="https://ticketmaster.com/event/test",
+    )
+
+
+class TestPriceRangeDetection:
+    """Test that price range appearances trigger notifications independent of status changes."""
+
+    def _make_scheduler_for_check(self):
+        config = _make_config(events=[_make_event_cfg()])
+        scheduler = _make_scheduler(config)
+        scheduler.client.is_budget_exhausted.return_value = False
+        scheduler.client.is_budget_warning.return_value = False
+        scheduler.client.get_event_offers.return_value = []
+        scheduler.state.get_last_status.return_value = "offsale"
+        scheduler.state.has_status_changed.return_value = False
+        scheduler.state.get_daily_activity.return_value = {}
+        scheduler.state.record_daily_activity.return_value = None
+        scheduler.state.set_last_check.return_value = None
+        scheduler.state.set_last_successful_check.return_value = None
+        scheduler.state.set_last_status.return_value = None
+        scheduler.state.set_had_price_ranges.return_value = None
+        return scheduler
+
+    def test_price_range_appeared_triggers_notification(self):
+        scheduler = self._make_scheduler_for_check()
+        # First time we see price ranges (had_ranges was False = previously had none)
+        scheduler.state.get_had_price_ranges.return_value = False
+        price_range = PriceRange(type="standard", currency="USD", min_price=50.0, max_price=150.0)
+        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[price_range])
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_price_range_appeared.assert_called_once()
+
+    def test_price_range_no_notification_on_first_ever_check(self):
+        """If had_ranges is None (never been checked), don't alert — we don't know if this is new."""
+        scheduler = self._make_scheduler_for_check()
+        scheduler.state.get_had_price_ranges.return_value = None
+        price_range = PriceRange(type="standard", currency="USD", min_price=50.0, max_price=150.0)
+        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[price_range])
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_price_range_appeared.assert_not_called()
+
+    def test_price_range_no_notification_when_already_had_ranges(self):
+        """If price ranges were already present last check, don't re-alert."""
+        scheduler = self._make_scheduler_for_check()
+        scheduler.state.get_had_price_ranges.return_value = True
+        price_range = PriceRange(type="standard", currency="USD", min_price=50.0, max_price=150.0)
+        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[price_range])
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_price_range_appeared.assert_not_called()
+
+    def test_price_range_no_notification_when_no_ranges(self):
+        """No alert when there are no price ranges."""
+        scheduler = self._make_scheduler_for_check()
+        scheduler.state.get_had_price_ranges.return_value = False
+        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[])
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_price_range_appeared.assert_not_called()
+
+    def test_had_price_ranges_recorded_each_check(self):
+        """set_had_price_ranges is always called so state stays up to date."""
+        scheduler = self._make_scheduler_for_check()
+        scheduler.state.get_had_price_ranges.return_value = None
+        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[])
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.state.set_had_price_ranges.assert_called_once_with("test-event", False)

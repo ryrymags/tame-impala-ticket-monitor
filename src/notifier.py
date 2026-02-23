@@ -93,6 +93,31 @@ class DiscordNotifier:
         mention = "<@206908742770360320>" if new_status == "onsale" else ""
         return self._send(embeds=[embed], content=mention)
 
+    def send_price_range_appeared(self, event_name: str, event_date: str, event_url: str,
+                                   price_min: float, price_max: float) -> bool:
+        """Notify when price ranges appear on a previously sold-out event (status unchanged)."""
+        embed = {
+            "title": f"Price Range Appeared: {event_name}",
+            "url": event_url,
+            "color": COLOR_BLUE,
+            "description": (
+                f"Price data appeared in the API for this event — tickets may be available.\n"
+                f"Price range: **${price_min:.0f} – ${price_max:.0f}**"
+            ),
+            "fields": [
+                {"name": "Date", "value": event_date, "inline": True},
+                {
+                    "name": "Action",
+                    "value": f"[Check Ticketmaster]({event_url})",
+                    "inline": False,
+                },
+            ],
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        return self._send(embeds=[embed], content="<@206908742770360320>")
+
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
         embed = {
