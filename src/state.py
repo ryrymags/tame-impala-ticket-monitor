@@ -44,46 +44,6 @@ class MonitorState:
         self._event(event_id)["had_price_ranges"] = had_ranges
         self.save()
 
-    def is_offer_new(self, event_id: str, offer_id: str) -> bool:
-        """True if we haven't notified about this offer yet."""
-        ev = self._event(event_id)
-        notified = ev.get("notified_offers", {})
-        if isinstance(notified, dict):
-            return offer_id not in notified
-        # Fallback for legacy list format
-        return offer_id not in ev.get("notified_offer_ids", [])
-
-    def record_notification(self, event_id: str, offer_ids: list[str]):
-        """Mark offers as notified and update the notification timestamp."""
-        ev = self._event(event_id)
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        # Store offer IDs with timestamps for TTL-based pruning
-        notified = ev.get("notified_offers", {})
-        if not isinstance(notified, dict):
-            # Migrate from old list format to timestamped dict
-            notified = {oid: now_iso for oid in ev.get("notified_offer_ids", [])}
-        for oid in offer_ids:
-            notified[oid] = now_iso
-        ev["notified_offers"] = notified
-        # Keep legacy key in sync for backwards compatibility
-        ev["notified_offer_ids"] = list(notified.keys())
-        ev["last_notification"] = now_iso
-        self.save()
-
-    def can_notify(self, event_id: str, cooldown_minutes: int) -> bool:
-        """True if enough time has passed since the last notification."""
-        ev = self._event(event_id)
-        last_notif = ev.get("last_notification")
-        if not last_notif:
-            return True
-        try:
-            last_dt = datetime.fromisoformat(last_notif)
-            elapsed = (datetime.now(timezone.utc) - last_dt).total_seconds()
-            return elapsed >= cooldown_minutes * 60
-        except (ValueError, TypeError):
-            return True
-
     def get_last_check(self, event_id: str) -> Optional[datetime]:
         """Get the timestamp of the last successful check."""
         val = self._event(event_id).get("last_check")
@@ -166,32 +126,17 @@ class MonitorState:
         self._state["daily_api_calls"] = self._state.get("daily_api_calls", 0) + count
         self.save()
 
-    def record_daily_activity(self, event_id: str, status: str, offer_count: int,
-                              best_score: float, filtered_reason: Optional[str] = None):
+    def record_daily_activity(self, event_id: str, status: str, has_price_ranges: bool):
         """Track what happened today for the daily recap."""
         activity = self._state.setdefault("daily_activity", {})
         ev_activity = activity.setdefault(event_id, {
             "statuses_seen": [],
-            "total_offers": 0,
-            "best_score": 0,
-            "alerts_sent": 0,
-            "filtered_reasons": [],
+            "price_ranges_seen": False,
         })
         if status not in ev_activity["statuses_seen"]:
             ev_activity["statuses_seen"].append(status)
-        ev_activity["total_offers"] = max(ev_activity["total_offers"], offer_count)
-        ev_activity["best_score"] = max(ev_activity["best_score"], best_score)
-        if filtered_reason and filtered_reason not in ev_activity["filtered_reasons"]:
-            ev_activity["filtered_reasons"].append(filtered_reason)
-
-    def increment_daily_alerts(self, event_id: str):
-        """Track that an alert was sent for this event today."""
-        activity = self._state.setdefault("daily_activity", {})
-        ev_activity = activity.setdefault(event_id, {
-            "statuses_seen": [], "total_offers": 0, "best_score": 0,
-            "alerts_sent": 0, "filtered_reasons": [],
-        })
-        ev_activity["alerts_sent"] = ev_activity.get("alerts_sent", 0) + 1
+        if has_price_ranges:
+            ev_activity["price_ranges_seen"] = True
 
     def get_daily_activity(self) -> dict:
         """Get the daily activity data."""
@@ -201,31 +146,6 @@ class MonitorState:
         """Reset daily activity tracking for a new day."""
         self._state["daily_activity"] = {}
         self.save()
-
-    def prune_old_offers(self, max_age_days: int = 7):
-        """Remove notified offer IDs older than max_age_days to prevent unbounded growth."""
-        now = datetime.now(timezone.utc)
-        pruned_total = 0
-        for event_id, ev in self._state.get("events", {}).items():
-            notified = ev.get("notified_offers", {})
-            if not isinstance(notified, dict):
-                continue
-            to_remove = []
-            for oid, ts in notified.items():
-                try:
-                    recorded = datetime.fromisoformat(ts)
-                    if (now - recorded).days >= max_age_days:
-                        to_remove.append(oid)
-                except (ValueError, TypeError):
-                    to_remove.append(oid)  # Remove entries with bad timestamps
-            for oid in to_remove:
-                del notified[oid]
-            ev["notified_offers"] = notified
-            ev["notified_offer_ids"] = list(notified.keys())
-            pruned_total += len(to_remove)
-        if pruned_total > 0:
-            logger.info("Pruned %d old notified offer IDs", pruned_total)
-            self.save()
 
     # ---- Persistence ----
 

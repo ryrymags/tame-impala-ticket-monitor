@@ -22,7 +22,6 @@ def _write_config(tmp_path, overrides=None):
                 "url": "https://ticketmaster.com/event/test",
             }
         ],
-        "preferences": {"max_price": 175.0},
         "polling": {"timezone": "US/Eastern"},
     }
     if overrides:
@@ -90,11 +89,6 @@ class TestLoadConfig:
         with pytest.raises(SystemExit):
             load_config(path)
 
-    def test_invalid_max_price_exits(self, tmp_path):
-        path = _write_config(tmp_path, {"preferences.max_price": "abc"})
-        with pytest.raises(SystemExit):
-            load_config(path)
-
     def test_invalid_interval_exits(self, tmp_path):
         path = _write_config(tmp_path, {"polling.daytime_interval_seconds": "fast"})
         with pytest.raises(SystemExit):
@@ -103,12 +97,9 @@ class TestLoadConfig:
     def test_defaults_applied(self, tmp_path):
         path = _write_config(tmp_path)
         config = load_config(path)
-        assert config.max_price == 175.0
-        assert config.daytime_interval_seconds == 90
+        assert config.daytime_interval_seconds == 30
         assert config.overnight_interval_seconds == 300
         assert config.timezone == "US/Eastern"
-        assert config.cooldown_minutes == 5
-        assert config.score_threshold == 30
 
     def test_auto_generates_event_url(self, tmp_path):
         config_data = {

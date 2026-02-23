@@ -63,14 +63,14 @@ def run_test(config_path: str):
     print("Running setup checks...\n")
 
     # 1. Config
-    print("[1/4] Loading config...")
+    print("[1/3] Loading config...")
     config = load_config(config_path)
-    print(f"      Config loaded: {len(config.events)} event(s), max price ${config.max_price:.2f}")
-    print(f"      Sections: {', '.join(config.preferred_sections)}")
+    print(f"      Config loaded: {len(config.events)} event(s)")
+    print(f"      Polling: every {config.daytime_interval_seconds}s (day) / {config.overnight_interval_seconds}s (night)")
     print()
 
-    # 2. API key + Event IDs (combined to avoid redundant calls)
-    print("[2/4] Testing API key and event IDs...")
+    # 2. API key + Event IDs
+    print("[2/3] Testing API key and event IDs...")
     client = TicketmasterClient(config.api_key)
     api_ok = False
     for ev in config.events:
@@ -94,33 +94,8 @@ def run_test(config_path: str):
         sys.exit(1)
     print()
 
-    # 3. Commerce API
-    print("[3/4] Testing Commerce API v2...")
-    commerce_accessible = False
-    for ev in config.events:
-        try:
-            offers = client.get_event_offers(ev.event_id)
-            if offers:
-                commerce_accessible = True
-                print(f"      {ev.name}: {len(offers)} offer(s) found")
-                for offer in offers[:3]:
-                    price_str = ""
-                    if offer.price_min is not None:
-                        price_str = f" — ${offer.price_min:.2f}"
-                        if offer.price_max and offer.price_max != offer.price_min:
-                            price_str = f" — ${offer.price_min:.2f}-${offer.price_max:.2f}"
-                    print(f"        - {offer.name}{price_str}")
-            else:
-                print(f"      {ev.name}: No offers (API may require partner access, or event has no current offers)")
-        except APIError as e:
-            print(f"      {ev.name}: Commerce API error — {e}")
-    if not commerce_accessible:
-        print("      Note: Commerce API may not be available with free API keys.")
-        print("      The monitor will still work using Discovery API status and price range changes.")
-    print()
-
-    # 4. Discord webhook
-    print("[4/4] Sending test Discord notification...")
+    # 3. Discord webhook
+    print("[3/3] Sending test Discord notification...")
     notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
     if notifier.send_test():
         print("      Discord webhook working — check your channel!")

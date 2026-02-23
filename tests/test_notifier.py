@@ -1,47 +1,74 @@
-"""Tests for Discord notifier — color selection and urgency labels."""
+"""Tests for Discord notifier — embed colors and notification methods."""
+
+from unittest.mock import MagicMock, patch
 
 from src.notifier import (
     DiscordNotifier,
     COLOR_GREEN,
-    COLOR_YELLOW,
-    COLOR_ORANGE,
-    COLOR_GREY,
+    COLOR_BLUE,
+    COLOR_RED,
 )
 
 
-class TestColorForScore:
-    def setup_method(self):
-        self.notifier = DiscordNotifier(webhook_url="https://test")
+class TestNotificationColors:
+    """Verify that each notification type uses the correct embed color."""
 
-    def test_score_140_plus_is_green(self):
-        assert self.notifier._color_for_score(140) == COLOR_GREEN
-        assert self.notifier._color_for_score(200) == COLOR_GREEN
+    def test_status_change_uses_blue(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_status_change("Test", "2026-07-28", "http://test", "offsale", "onsale")
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_BLUE
 
-    def test_score_60_to_139_is_yellow(self):
-        assert self.notifier._color_for_score(60) == COLOR_YELLOW
-        assert self.notifier._color_for_score(139) == COLOR_YELLOW
+    def test_price_range_appeared_uses_blue(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_price_range_appeared("Test", "2026-07-28", "http://test", 50.0, 150.0)
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_BLUE
 
-    def test_score_30_to_59_is_orange(self):
-        assert self.notifier._color_for_score(30) == COLOR_ORANGE
-        assert self.notifier._color_for_score(59) == COLOR_ORANGE
+    def test_sold_out_again_uses_red(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_sold_out_again("Test", "2026-07-28", "http://test")
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_RED
 
-    def test_score_below_30_is_grey(self):
-        assert self.notifier._color_for_score(0) == COLOR_GREY
-        assert self.notifier._color_for_score(29) == COLOR_GREY
+    def test_heartbeat_uses_blue(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_heartbeat(daily_calls=100, uptime_hours=24.0, last_check=None)
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_BLUE
+
+    def test_test_notification_uses_green(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_test()
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_GREEN
+
+    def test_error_uses_red(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_error("Something broke")
+            embed = mock_send.call_args[1]["embeds"][0]
+            assert embed["color"] == COLOR_RED
 
 
-class TestUrgencyLabel:
-    def setup_method(self):
-        self.notifier = DiscordNotifier(webhook_url="https://test")
+class TestStatusChangeMention:
+    """Verify that onsale status changes include a user mention."""
 
-    def test_high_score_is_drop_everything(self):
-        label = self.notifier._urgency_label(140)
-        assert "DROP EVERYTHING" in label
+    def test_onsale_includes_mention(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_status_change("Test", "2026-07-28", "http://test", "offsale", "onsale")
+            content = mock_send.call_args[1].get("content", "")
+            assert "<@" in content
 
-    def test_medium_score_is_good_option(self):
-        label = self.notifier._urgency_label(60)
-        assert "Good Option" in label
-
-    def test_low_score_is_available(self):
-        label = self.notifier._urgency_label(20)
-        assert "Available" in label
+    def test_offsale_no_mention(self):
+        notifier = DiscordNotifier(webhook_url="https://test")
+        with patch.object(notifier, "_send", return_value=True) as mock_send:
+            notifier.send_status_change("Test", "2026-07-28", "http://test", "onsale", "offsale")
+            content = mock_send.call_args[1].get("content", "")
+            assert content == ""

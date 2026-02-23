@@ -38,27 +38,14 @@ events:
     date: "2026-07-29"
     url: "https://www.ticketmaster.com/tame-impala-the-deadbeat-tour-boston-massachusetts-07-29-2026/event/01006444D7AFFD78"
 
-# ---- Ticket Preferences ----
-# max_price: Hard cutoff — anything above this is ignored (USD)
-# preferred_sections: Ranked best-to-worst. Used for scoring, not hard filtering.
-#   "General Admission" = GA / floor
-#   "LOGE" = loge-level seating
-#   "Balcony" = upper-level seating
-preferences:
-  max_price: 175.00
-  currency: "USD"
-  preferred_sections:
-    - "General Admission"
-    - "LOGE"
-    - "Balcony"
-
 # ---- Polling Intervals ----
 # Two tiers to stay well under the 5,000/day API budget:
 #   daytime: 8 AM – 1 AM ET (active hours, more frequent)
 #   overnight: 1 AM – 8 AM ET (less frequent)
-# Values are in seconds. Adjust to your comfort level.
+# With 2 API calls per cycle (one Discovery API call per event), polling every
+# 30 seconds during daytime uses ~4,250 calls/day, well within the 5,000 limit.
 polling:
-  daytime_interval_seconds: 90       # Every 90 seconds during active hours
+  daytime_interval_seconds: 30       # Every 30 seconds during active hours
   overnight_interval_seconds: 300    # Every 5 minutes overnight
   daytime_start_hour: 8             # 8 AM ET
   daytime_end_hour: 1               # 1 AM ET (next day)
@@ -67,14 +54,7 @@ polling:
   timezone: "US/Eastern"            # Venue timezone
 
 # ---- Notification Settings ----
-# cooldown_minutes: Minimum gap between alerts for the SAME event.
-#   Prevents spam if tickets keep appearing/disappearing.
-# score_threshold: Minimum score to trigger a Discord notification.
-#   Scores below this are logged but not sent.
-#   Scoring: GA=+100, LOGE=+60, Balcony=+30, <$100=+50, qty>=4=+40, qty>=2=+20
 notifications:
-  cooldown_minutes: 5
-  score_threshold: 30
   notify_on_status_change: true     # Alert when event goes onsale/offsale
   daily_heartbeat_hour: 9           # Send daily heartbeat at 9 AM ET
   daily_recap_hour: 23              # Send daily recap at 11 PM ET

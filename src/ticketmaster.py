@@ -1,4 +1,4 @@
-"""Ticketmaster API client — Discovery API v2 and Commerce API v2."""
+"""Ticketmaster API client — Discovery API v2."""
 
 import logging
 import time
@@ -7,7 +7,7 @@ from typing import Optional
 
 import requests
 
-from .models import EventStatus, EventStatusCode, Offer, PriceRange, RateLimitInfo
+from .models import EventStatus, EventStatusCode, PriceRange, RateLimitInfo
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +18,9 @@ DAILY_BUDGET_WARNING = 4000  # Start throttling here
 
 
 class TicketmasterClient:
-    """Client for Ticketmaster Discovery and Commerce APIs."""
+    """Client for the Ticketmaster Discovery API."""
 
     DISCOVERY_BASE = "https://app.ticketmaster.com/discovery/v2"
-    COMMERCE_BASE = "https://app.ticketmaster.com/commerce/v2"
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -77,46 +76,6 @@ class TicketmasterClient:
             event_url=event_url,
             raw_response=data,
         )
-
-    def get_event_offers(self, event_id: str) -> list[Offer]:
-        """Tier 2: Commerce API v2 — get ticket offers for an event.
-
-        Returns an empty list if the Commerce API is not accessible with
-        the current API key (401/403). The free Consumer Key may not have
-        Commerce API access — this is expected and non-fatal.
-        """
-        url = f"{self.COMMERCE_BASE}/events/{event_id}/offers.json"
-        params = {"apikey": self.api_key}
-
-        try:
-            data = self._request("GET", url, params=params)
-        except RateLimitError:
-            raise  # Don't swallow rate limits — let them bubble up
-        except AuthenticationError as e:
-            logger.debug("Commerce API not accessible (expected with free key): %s", e)
-            return []
-        except APIError as e:
-            raise
-
-        offers = []
-        # The Commerce v2 response structure may vary; parse flexibly
-        offers_data = data.get("offers", data.get("_embedded", {}).get("offers", []))
-        if isinstance(offers_data, dict):
-            # Sometimes offers is a dict keyed by offer ID
-            offers_data = list(offers_data.values())
-
-        for i, offer_raw in enumerate(offers_data):
-            if isinstance(offer_raw, dict):
-                offers.append(self._parse_offer(offer_raw, i))
-
-        # Also check for "prices" at top level (alternative response shape)
-        prices_data = data.get("prices", [])
-        if prices_data and not offers:
-            for i, price_raw in enumerate(prices_data):
-                if isinstance(price_raw, dict):
-                    offers.append(self._parse_price_as_offer(price_raw, i))
-
-        return offers
 
     def get_daily_call_count(self) -> int:
         """Return how many API calls have been made today."""
@@ -208,77 +167,6 @@ class TicketmasterClient:
         except (ValueError, TypeError):
             pass  # Headers may not always be present
 
-    def _parse_offer(self, raw: dict, index: int) -> Offer:
-        """Parse an offer from Commerce API v2 response."""
-        # Try multiple possible field names for price data
-        price_min = None
-        price_max = None
-        currency = "USD"
-
-        # Check nested "prices" or "attributes.prices"
-        prices = raw.get("prices", raw.get("attributes", {}).get("prices", []))
-        if isinstance(prices, list) and prices:
-            for p in prices:
-                val = p.get("value", p.get("amount"))
-                if val is not None:
-                    val = float(val)
-                    if price_min is None or val < price_min:
-                        price_min = val
-                    if price_max is None or val > price_max:
-                        price_max = val
-                    currency = p.get("currency", currency)
-
-        # Check top-level price fields
-        if price_min is None:
-            for key in ("totalPrice", "price", "faceValue", "listPrice"):
-                if key in raw:
-                    val = raw[key]
-                    if isinstance(val, dict):
-                        price_min = float(val.get("amount", val.get("value", 0)))
-                        currency = val.get("currency", currency)
-                    elif isinstance(val, (int, float)):
-                        price_min = float(val)
-                    if price_min is not None:
-                        price_max = price_max or price_min
-                        break
-
-        # Offer limit (max tickets per order)
-        limit = raw.get("limit", raw.get("attributes", {}).get("limit"))
-        if isinstance(limit, dict):
-            limit = limit.get("max", limit.get("multiples"))
-        if limit is not None:
-            try:
-                limit = int(limit)
-            except (ValueError, TypeError):
-                limit = None
-
-        return Offer(
-            offer_id=str(raw.get("id", raw.get("offerId", f"offer_{index}"))),
-            name=raw.get("name", raw.get("description", f"Offer {index + 1}")),
-            description=raw.get("description", raw.get("name")),
-            price_min=price_min,
-            price_max=price_max,
-            currency=currency,
-            ticket_type=raw.get("ticketTypeId", raw.get("type")),
-            limit=limit,
-            raw_data=raw,
-        )
-
-    def _parse_price_as_offer(self, raw: dict, index: int) -> Offer:
-        """Parse a price entry as an Offer (fallback for alternative response shapes)."""
-        val = raw.get("value", raw.get("amount", raw.get("total")))
-        price = float(val) if val is not None else None
-        return Offer(
-            offer_id=str(raw.get("id", f"price_{index}")),
-            name=raw.get("section", raw.get("name", f"Price {index + 1}")),
-            description=raw.get("description"),
-            price_min=price,
-            price_max=price,
-            currency=raw.get("currency", "USD"),
-            ticket_type=raw.get("type"),
-            limit=None,
-            raw_data=raw,
-        )
 
 
 # ---- Custom exceptions ----

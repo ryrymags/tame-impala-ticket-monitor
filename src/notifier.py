@@ -6,15 +6,10 @@ from typing import Optional
 
 import requests
 
-from .models import TicketAlert
-
 logger = logging.getLogger(__name__)
 
 # Discord embed color codes
-COLOR_GREEN = 0x00FF00    # Score >= 140: "DROP EVERYTHING"
-COLOR_YELLOW = 0xFFFF00   # Score >= 60: "Good option"
-COLOR_ORANGE = 0xFF8C00   # Score >= 30: "Something available"
-COLOR_GREY = 0x95A5A6     # Score < 30: "Low priority"
+COLOR_GREEN = 0x00FF00    # Test notification / success
 COLOR_BLUE = 0x3498DB      # Status change / informational
 COLOR_RED = 0xE74C3C       # Error or back to sold out
 
@@ -25,49 +20,6 @@ class DiscordNotifier:
     def __init__(self, webhook_url: str, username: str = "Ticket Monitor"):
         self.webhook_url = webhook_url
         self.username = username
-
-    def send_ticket_alert(self, alert: TicketAlert) -> bool:
-        """Send a ticket availability alert with scoring info."""
-        color = self._color_for_score(alert.total_score)
-        urgency = self._urgency_label(alert.total_score)
-
-        # Build offer details
-        offer_lines = []
-        for offer in alert.matching_offers:
-            price_str = ""
-            if offer.price_min is not None:
-                if offer.price_max and offer.price_max != offer.price_min:
-                    price_str = f"${offer.price_min:.2f} - ${offer.price_max:.2f}"
-                else:
-                    price_str = f"${offer.price_min:.2f}"
-
-            limit_str = f" (up to {offer.limit})" if offer.limit else ""
-            offer_lines.append(f"**{offer.name}**: {price_str}{limit_str}")
-
-        offers_text = "\n".join(offer_lines) if offer_lines else "Details unavailable — check Ticketmaster"
-        score_text = f"**Score: {int(alert.total_score)}** — {', '.join(alert.score_reasons)}"
-
-        embed = {
-            "title": f"{urgency} {alert.event_name}",
-            "url": alert.event_url,
-            "color": color,
-            "fields": [
-                {"name": "Date", "value": alert.event_date, "inline": True},
-                {"name": "Venue", "value": "TD Garden, Boston, MA", "inline": True},
-                {"name": "Status", "value": alert.status.status_code.value.upper(), "inline": True},
-                {"name": "Available Offers", "value": offers_text, "inline": False},
-                {"name": "Score", "value": score_text, "inline": False},
-                {
-                    "name": "Buy Now",
-                    "value": f"[Open on Ticketmaster]({alert.event_url})",
-                    "inline": False,
-                },
-            ],
-            "footer": {"text": "Face Value Exchange Monitor"},
-            "timestamp": alert.timestamp.isoformat(),
-        }
-
-        return self._send(embeds=[embed], content="<@206908742770360320>")
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
                            old_status: str, new_status: str) -> bool:
@@ -181,25 +133,14 @@ class DiscordNotifier:
             name = summary["name"]
             statuses = summary.get("statuses_seen", ["unknown"])
             current_status = statuses[-1] if statuses else "unknown"
-            offers = summary.get("total_offers", 0)
-            best_score = summary.get("best_score", 0)
-            alerts = summary.get("alerts_sent", 0)
-            filtered = summary.get("filtered_reasons", [])
+            price_ranges_seen = summary.get("price_ranges_seen", False)
 
-            if current_status == "offsale" and offers == 0:
-                lines.append(f"**{name}**: Still offsale. No tickets appeared today.")
-            elif offers > 0 and alerts > 0:
-                lines.append(
-                    f"**{name}**: Tickets appeared! "
-                    f"{alerts} alert(s) sent, best score **{int(best_score)}**."
-                )
-            elif offers > 0 and alerts == 0:
-                reason = ", ".join(filtered) if filtered else "didn't meet criteria"
-                lines.append(
-                    f"**{name}**: {offers} offer(s) seen but {reason}."
-                )
+            if current_status == "offsale" and not price_ranges_seen:
+                lines.append(f"**{name}**: Still offsale. No ticket activity today.")
+            elif price_ranges_seen:
+                lines.append(f"**{name}**: Price data appeared! Status: **{current_status}**.")
             else:
-                lines.append(f"**{name}**: Status: **{current_status}**. No offers today.")
+                lines.append(f"**{name}**: Status: **{current_status}**. No price data today.")
 
         description = "\n".join(lines)
         description += f"\n\nAPI calls used today: **{daily_calls}** / 5,000"
@@ -252,19 +193,3 @@ class DiscordNotifier:
             logger.error("Discord webhook request failed: %s", e)
             return False
 
-    def _color_for_score(self, score: float) -> int:
-        if score >= 140:
-            return COLOR_GREEN
-        elif score >= 60:
-            return COLOR_YELLOW
-        elif score >= 30:
-            return COLOR_ORANGE
-        return COLOR_GREY
-
-    def _urgency_label(self, score: float) -> str:
-        if score >= 140:
-            return "DROP EVERYTHING —"
-        elif score >= 60:
-            return "Good Option —"
-        else:
-            return "Available —"

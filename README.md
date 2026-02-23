@@ -4,13 +4,12 @@ Automated monitor that checks Ticketmaster for Face Value Exchange resale ticket
 
 ## What This Does
 
-Both shows (July 28 & 29, 2026) are sold out. Ticketmaster's **Face Value Exchange** allows original buyers to resell their tickets at face value through Ticketmaster's official platform — no scalper markups. This monitor polls the Ticketmaster Discovery API continuously (every 90 seconds during active hours) looking for:
+Both shows (July 28 & 29, 2026) are sold out. Ticketmaster's **Face Value Exchange** allows original buyers to resell their tickets at face value through Ticketmaster's official platform — no scalper markups. This monitor polls the Ticketmaster Discovery API every **30 seconds** during active hours looking for:
 
 - Status changes (e.g., `offsale` → `onsale`, which signals resale listings may have appeared)
 - Price range data appearing on previously sold-out events
-- Commerce API offer data (if accessible — requires partner-level API access)
 
-When something changes, it sends a scored, color-coded Discord notification with a direct purchase link.
+When something changes, it sends a Discord notification with a direct purchase link.
 
 ## Events Monitored
 
@@ -21,50 +20,21 @@ When something changes, it sends a scored, color-coded Discord notification with
 
 > **Note:** The Discovery API uses different event IDs than the ones in website URLs. The website legacy IDs (e.g., `01006430FEAADAD2`) do not work with the API.
 
-## Architecture
+## How It Detects Tickets
 
-The monitor has a three-tier data collection approach:
+The monitor uses the **Ticketmaster Discovery API v2** (free Consumer Key):
 
-### Tier 1: Discovery API v2 (Primary)
-- **Endpoint:** `https://app.ticketmaster.com/discovery/v2/events/{id}.json?apikey=KEY`
-- Checks event status (`onsale`, `offsale`, `cancelled`, etc.)
-- Reads `priceRanges` when available
-- Extracts the canonical event URL from the API response
-- **This is the main detection mechanism** — works with free Consumer Keys
+**Endpoint:** `https://app.ticketmaster.com/discovery/v2/events/{id}.json?apikey=KEY`
 
-### Tier 2: Commerce API v2 (Supplementary)
-- **Endpoint:** `https://app.ticketmaster.com/commerce/v2/events/{id}/offers.json?apikey=KEY`
-- Would provide detailed offer data (sections, prices, ticket limits)
-- **Requires partner-level API access** — returns 401 with free Consumer Keys
-- The monitor handles this gracefully (returns empty list, logs it, continues)
+Two independent detection triggers, either of which pings you on Discord:
 
-### Tier 3: Page Checker (Optional, Disabled by Default)
-- Fetches the Ticketmaster event page HTML
-- Extracts `__NEXT_DATA__` (Next.js) and JSON-LD structured data
-- May be blocked by Ticketmaster's anti-bot systems
-- Enable in `config.yaml` with `optional.enable_page_check: true`
+1. **Status change** — The event status flips from `offsale` → `onsale`. For a sold-out show, this typically means Face Value Exchange resale has opened.
+2. **Price range appearance** — `priceRanges` data shows up in the API response where there was none before. Catches cases where FVE listings appear without a status change.
 
-## Scoring System
-
-When offers are found, they're scored to prioritize notifications:
-
-| Criteria | Points |
-|----------|--------|
-| General Admission / GA / Floor | +100 |
-| LOGE section | +60 |
-| Balcony section | +30 |
-| Price under $100 | +50 |
-| Quantity limit ≥ 4 | +40 |
-| Quantity limit ≥ 2 | +20 |
-
-### Discord Notification Colors
-- **Green** (`#00FF00`) — Score ≥ 140: "DROP EVERYTHING" (e.g., GA + under $100)
-- **Yellow** (`#FFFF00`) — Score ≥ 60: "Good Option" (e.g., LOGE section)
-- **Orange** (`#FF8C00`) — Score ≥ 30: "Available" (e.g., Balcony section)
-
-### Other Notifications
-- **Blue** (`#3498DB`) — Status changes and daily heartbeat
+### Discord Notifications
+- **Blue** (`#3498DB`) — Status changes, price range appearances, heartbeat, and daily recap
 - **Red** (`#E74C3C`) — Back to sold out, or monitor errors
+- **Green** (`#00FF00`) — Test notification (from `--test`)
 
 ## Polling Strategy
 
@@ -72,13 +42,14 @@ Two-tier polling based on time of day (US/Eastern timezone):
 
 | Period | Hours | Interval | Rationale |
 |--------|-------|----------|-----------|
-| Daytime | 8 AM – 1 AM ET | Every 90 seconds | Active hours, most likely time for listings |
+| Daytime | 8 AM – 1 AM ET | Every 30 seconds | Active hours, most likely time for listings |
 | Overnight | 1 AM – 8 AM ET | Every 5 minutes | Low activity, save API budget |
 
 ### API Budget
 - **Rate limit:** 5 requests/second, 5,000 requests/day
-- Each check cycle makes 2 Discovery API calls (one per event) + 2 Commerce API calls = ~4 calls per cycle
-- At 90-second intervals during daytime (17 hours), that's ~2,720 calls/day — well within budget
+- Each check cycle makes 2 Discovery API calls (one per event)
+- At 30-second intervals during daytime (17 hours): ~4,080 calls + ~168 overnight = **~4,250 calls/day**
+- Leaves ~750 calls of headroom for manual tests and edge cases
 - The monitor tracks daily usage and warns at 4,000 calls, stops at 5,000
 
 ## File Structure
@@ -95,12 +66,12 @@ tame-impala-ticket-monitor/
 ├── src/
 │   ├── __init__.py              # Package marker
 │   ├── config.py                # YAML config loader with env var overrides
-│   ├── models.py                # Dataclasses (EventStatus, Offer, TicketAlert, etc.)
-│   ├── notifier.py              # Discord webhook sender with scored embeds
-│   ├── page_checker.py          # Optional Tier 3 HTML page scraper
-│   ├── scheduler.py             # Main monitoring loop, scoring, adaptive intervals
-│   ├── state.py                 # JSON state persistence (tracks seen offers, status)
-│   └── ticketmaster.py          # Discovery + Commerce API client, rate limiting
+│   ├── models.py                # Dataclasses (EventStatus, PriceRange, etc.)
+│   ├── notifier.py              # Discord webhook sender
+│   ├── page_checker.py          # Optional HTML page scraper (disabled by default)
+│   ├── scheduler.py             # Main monitoring loop with adaptive intervals
+│   ├── state.py                 # JSON state persistence (status, price ranges, checks)
+│   └── ticketmaster.py          # Discovery API client with rate limiting
 ├── tests/                       # pytest test suite
 ├── .gitignore
 ├── config.example.yaml          # Template config (copy to config.yaml and fill in values)
@@ -116,8 +87,8 @@ tame-impala-ticket-monitor/
 
 The monitor runs as a persistent `systemd` service on an Oracle Cloud free-tier VM:
 
-1. `monitor.py` runs continuously, polling in a loop with adaptive intervals (90s daytime / 5min overnight)
-2. `state.json` is stored on disk — survives restarts, tracks seen offers and last statuses
+1. `monitor.py` runs continuously, polling in a loop with adaptive intervals (30s daytime / 5min overnight)
+2. `state.json` is stored on disk — survives restarts, tracks statuses and price ranges
 3. Logs go to `journald` (`sudo journalctl -u ticket-monitor -f`)
 
 **Deploy pipeline:**
@@ -167,17 +138,15 @@ All settings are in `config.yaml`. Key sections:
 - **`ticketmaster.api_key`** — Your Ticketmaster Consumer Key (free from developer.ticketmaster.com)
 - **`discord.webhook_url`** — Your Discord webhook URL
 - **`events`** — List of events to monitor (Discovery API IDs, names, dates, URLs)
-- **`preferences`** — Max price ($175), preferred sections (GA > LOGE > Balcony)
-- **`polling`** — Interval timing, backoff settings, timezone
-- **`notifications`** — Cooldown between alerts (5 min), score threshold, daily heartbeat hour
+- **`polling`** — Interval timing (30s daytime / 5min overnight), backoff settings, timezone
+- **`notifications`** — Status change alerts, daily heartbeat/recap hours
 
 ## State Management
 
 The monitor persists state to `state.json` (excluded from git via `.gitignore`):
 
 - **Last known status** per event — detects `offsale` → `onsale` transitions
-- **Notified offer IDs** — prevents duplicate alerts for the same offers
-- **Last notification timestamp** — enforces cooldown between alerts
+- **Price range presence** per event — detects when price data appears
 - **Last heartbeat date** — ensures only one heartbeat per day
 - **Last check timestamp** — reported in heartbeat messages
 
@@ -187,7 +156,7 @@ State is saved atomically (write to temp file, then `os.replace`) to prevent cor
 
 - **Network errors** (connection failures, timeouts): Do NOT count toward daily API budget. Monitor retries with increasing backoff (30s increments, capped at 10 min). Logs recovery when network returns.
 - **Rate limiting** (HTTP 429): Respects `Retry-After` header. Backs off for the specified duration.
-- **Commerce API 401/403**: Expected with free API keys. Gracefully returns empty offer list and continues.
+- **Authentication errors (401/403)**: Indicates revoked or invalid API key. Logged and surfaced.
 - **Event not found (404)**: Skips that event for the current cycle, continues checking others.
 - **Server errors (5xx)**: Exponential backoff with multiplier from config.
 
@@ -201,6 +170,6 @@ All are standard, well-maintained Python packages. No Selenium, Playwright, or b
 
 ## Limitations
 
-- The **Commerce API** (detailed offer data) requires partner-level API access, which is not available with free Consumer Keys. The monitor works with the Discovery API alone, but can only detect status changes and price range appearances rather than individual ticket listings.
-- **Face Value Exchange** listings may appear and disappear quickly. The 90-second polling interval means there could be a window where tickets are posted and sold before the next check.
+- The Discovery API provides event-level status and price ranges, not individual ticket listings (sections, seat numbers, per-ticket prices). When you get a ping, you'll need to check Ticketmaster yourself to see what's available.
+- **Face Value Exchange** listings may appear and disappear quickly. The 30-second polling interval means there could be a brief window where tickets are posted and sold before the next check.
 - The **page checker** (Tier 3) may be blocked by Ticketmaster's anti-bot/anti-scraping systems and is disabled by default.

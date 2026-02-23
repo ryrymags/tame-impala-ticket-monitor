@@ -1,4 +1,4 @@
-"""Polling scheduler — main monitoring loop with scoring and adaptive intervals."""
+"""Polling scheduler — main monitoring loop with adaptive intervals."""
 
 import logging
 import time
@@ -8,7 +8,7 @@ from typing import Optional
 from dateutil import tz
 
 from .config import EventConfig, MonitorConfig
-from .models import EventStatus, EventStatusCode, Offer, TicketAlert
+from .models import EventStatusCode
 from .notifier import DiscordNotifier
 from .state import MonitorState
 from .ticketmaster import (
@@ -20,14 +20,6 @@ from .ticketmaster import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Scoring weights
-SCORE_GA = 100
-SCORE_LOGE = 60
-SCORE_BALCONY = 30
-SCORE_UNDER_100 = 50
-SCORE_QTY_4_PLUS = 40
-SCORE_QTY_2_PLUS = 20
 
 
 class MonitorScheduler:
@@ -131,20 +123,7 @@ class MonitorScheduler:
 
     def send_recap(self) -> bool:
         """Send the daily recap immediately, ignoring the hour check."""
-        activity = self.state.get_daily_activity()
-
-        event_summaries = []
-        for event_cfg in self.config.events:
-            ev_activity = activity.get(event_cfg.event_id, {})
-            event_summaries.append({
-                "name": event_cfg.name,
-                "statuses_seen": ev_activity.get("statuses_seen", []),
-                "total_offers": ev_activity.get("total_offers", 0),
-                "best_score": ev_activity.get("best_score", 0),
-                "alerts_sent": ev_activity.get("alerts_sent", 0),
-                "filtered_reasons": ev_activity.get("filtered_reasons", []),
-            })
-
+        event_summaries = self._build_recap_summaries()
         return self.notifier.send_daily_recap(
             event_summaries=event_summaries,
             daily_calls=self.state.get_daily_api_calls(),
@@ -227,134 +206,25 @@ class MonitorScheduler:
                 )
         self.state.set_had_price_ranges(event_id, has_ranges)
 
-        # Tier 2: Commerce API — offers (always run, don't gate on status)
-        offers = self.client.get_event_offers(event_id)
-        logger.info("[%s] Offers found: %d", event_cfg.name, len(offers))
-
-        # Filter and score offers
-        matching = self._filter_and_score(offers)
-
-        if matching:
-            # Build alert
-            total_score = max(o.priority_score for o in matching)
-            reasons = self._build_score_reasons(matching)
-
-            logger.info(
-                "[%s] Matching offers: %d, top score: %d",
-                event_cfg.name, len(matching), total_score,
-            )
-
-            # Track for daily recap
-            self.state.record_daily_activity(
-                event_id, status.status_code.value, len(matching), total_score,
-            )
-
-            # Check score threshold and cooldown
-            if total_score >= self.config.score_threshold:
-                new_offer_ids = [o.offer_id for o in matching if self.state.is_offer_new(event_id, o.offer_id)]
-
-                if new_offer_ids and self.state.can_notify(event_id, self.config.cooldown_minutes):
-                    alert = TicketAlert(
-                        event_name=event_cfg.name,
-                        event_date=event_cfg.date,
-                        event_url=event_url,
-                        event_id=event_id,
-                        status=status,
-                        matching_offers=matching,
-                        page_data=None,
-                        timestamp=datetime.now(timezone.utc),
-                        total_score=total_score,
-                        score_reasons=reasons,
-                    )
-
-                    if self.notifier.send_ticket_alert(alert):
-                        self.state.record_notification(event_id, [o.offer_id for o in matching])
-                        self.state.increment_daily_alerts(event_id)
-                        logger.info("[%s] Discord alert sent (score %d)", event_cfg.name, total_score)
-                    else:
-                        logger.error("[%s] Failed to send Discord alert", event_cfg.name)
-                elif not new_offer_ids:
-                    logger.debug("[%s] No new offers to notify about", event_cfg.name)
-                else:
-                    logger.debug("[%s] Cooldown active, skipping notification", event_cfg.name)
-            else:
-                self.state.record_daily_activity(
-                    event_id, status.status_code.value, len(matching), total_score,
-                    filtered_reason=f"score {int(total_score)} below threshold {self.config.score_threshold}",
-                )
-                logger.debug("[%s] Score %d below threshold %d", event_cfg.name, total_score, self.config.score_threshold)
-        else:
-            # Track no-offer status for daily recap
-            filtered_reason = None
-            if len(offers) > 0 and len(matching) == 0:
-                filtered_reason = "above max price"
-            self.state.record_daily_activity(
-                event_id, status.status_code.value, 0, 0, filtered_reason=filtered_reason,
-            )
-            logger.debug("[%s] No matching offers", event_cfg.name)
+        # Track for daily recap
+        self.state.record_daily_activity(event_id, status.status_code.value, has_ranges)
 
         self.state.set_last_check(event_id)
         self._last_successful_check = datetime.now(timezone.utc)
         self.state.set_last_successful_check()
 
-    def _filter_and_score(self, offers: list[Offer]) -> list[Offer]:
-        """Filter offers by max price and score by section/price/quantity preferences."""
-        matching = []
-
-        for offer in offers:
-            # Hard filter: skip if above max price
-            if offer.price_max is not None and offer.price_max > self.config.max_price:
-                continue
-
-            # If we have no price info at all, still include it (better to alert than miss)
-            score = 0.0
-            reasons = []
-
-            # Section scoring
-            offer_name_lower = (offer.name or "").lower()
-            if "general admission" in offer_name_lower or "ga" == offer_name_lower or "floor" in offer_name_lower:
-                score += SCORE_GA
-                reasons.append("GA")
-            elif "loge" in offer_name_lower:
-                score += SCORE_LOGE
-                reasons.append("LOGE")
-            elif "balcony" in offer_name_lower or "bal" in offer_name_lower:
-                score += SCORE_BALCONY
-                reasons.append("Balcony")
-            else:
-                # Unknown section — give minimum score so it still shows up
-                score += 10
-                reasons.append(offer.name or "Unknown section")
-
-            # Price scoring
-            effective_price = offer.price_max or offer.price_min
-            if effective_price is not None and effective_price < 100:
-                score += SCORE_UNDER_100
-                reasons.append("under $100")
-
-            # Quantity scoring
-            if offer.limit is not None:
-                if offer.limit >= 4:
-                    score += SCORE_QTY_4_PLUS
-                    reasons.append(f"qty {offer.limit}+")
-                elif offer.limit >= 2:
-                    score += SCORE_QTY_2_PLUS
-                    reasons.append(f"qty {offer.limit}+")
-
-            offer.priority_score = score
-            offer.score_reasons = reasons
-            matching.append(offer)
-
-        # Sort by score descending
-        matching.sort(key=lambda o: o.priority_score, reverse=True)
-        return matching
-
-    def _build_score_reasons(self, offers: list[Offer]) -> list[str]:
-        """Collect score reasons from the top-scoring offer."""
-        if not offers:
-            return []
-        top = offers[0]
-        return top.score_reasons if top.score_reasons else [f"score {int(top.priority_score)}"]
+    def _build_recap_summaries(self) -> list[dict]:
+        """Build event summaries for the daily recap."""
+        activity = self.state.get_daily_activity()
+        summaries = []
+        for event_cfg in self.config.events:
+            ev_activity = activity.get(event_cfg.event_id, {})
+            summaries.append({
+                "name": event_cfg.name,
+                "statuses_seen": ev_activity.get("statuses_seen", []),
+                "price_ranges_seen": ev_activity.get("price_ranges_seen", False),
+            })
+        return summaries
 
     # ---- Scheduling helpers ----
 
@@ -405,7 +275,6 @@ class MonitorScheduler:
                 last_check=self._last_successful_check,
             ):
                 self.state.set_last_heartbeat_date(today_str)
-                self.state.prune_old_offers()
                 logger.info("Daily heartbeat sent")
             else:
                 logger.error("Failed to send daily heartbeat — will retry next cycle")
@@ -420,20 +289,7 @@ class MonitorScheduler:
             return  # Already sent today
 
         if now.hour == self.config.daily_recap_hour:
-            activity = self.state.get_daily_activity()
-
-            # Build summaries for each monitored event
-            event_summaries = []
-            for event_cfg in self.config.events:
-                ev_activity = activity.get(event_cfg.event_id, {})
-                event_summaries.append({
-                    "name": event_cfg.name,
-                    "statuses_seen": ev_activity.get("statuses_seen", []),
-                    "total_offers": ev_activity.get("total_offers", 0),
-                    "best_score": ev_activity.get("best_score", 0),
-                    "alerts_sent": ev_activity.get("alerts_sent", 0),
-                    "filtered_reasons": ev_activity.get("filtered_reasons", []),
-                })
+            event_summaries = self._build_recap_summaries()
 
             if self.notifier.send_daily_recap(
                 event_summaries=event_summaries,

@@ -1,7 +1,6 @@
 """Data models for the ticket monitor."""
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -40,21 +39,6 @@ class EventStatus:
 
 
 @dataclass
-class Offer:
-    offer_id: str
-    name: str
-    description: Optional[str]
-    price_min: Optional[float]
-    price_max: Optional[float]
-    currency: str
-    ticket_type: Optional[str]
-    limit: Optional[int]           # max tickets per order
-    raw_data: dict
-    priority_score: float = 0.0
-    score_reasons: list[str] = field(default_factory=list)
-
-
-@dataclass
 class PageData:
     sections_available: list[str]
     price_info: Optional[str]
@@ -68,17 +52,3 @@ class RateLimitInfo:
     available: int
     over: int
     reset_seconds: int
-
-
-@dataclass
-class TicketAlert:
-    event_name: str
-    event_date: str
-    event_url: str
-    event_id: str
-    status: EventStatus
-    matching_offers: list[Offer]
-    page_data: Optional[PageData]
-    timestamp: datetime
-    total_score: float
-    score_reasons: list[str]
