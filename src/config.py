@@ -76,11 +76,11 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
 
     # Validate required fields — environment variables override config file.
     # This lets GitHub Actions pass secrets via TM_API_KEY and DISCORD_WEBHOOK_URL.
-    api_key = os.environ.get("TM_API_KEY") or tm.get("api_key", "")
+    api_key = (os.environ.get("TM_API_KEY") or tm.get("api_key", "")).strip()
     if not api_key or api_key == "YOUR_API_KEY_HERE":
         errors.append("ticketmaster.api_key is required — get one at https://developer.ticketmaster.com/")
 
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL") or discord.get("webhook_url", "")
+    webhook_url = (os.environ.get("DISCORD_WEBHOOK_URL") or discord.get("webhook_url", "")).strip()
     if not webhook_url or webhook_url == "YOUR_WEBHOOK_URL_HERE":
         errors.append("discord.webhook_url is required — create one in Server Settings > Integrations > Webhooks")
 

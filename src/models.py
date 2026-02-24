@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class EventStatusCode(Enum):
@@ -34,14 +33,14 @@ class EventStatus:
     event_id: str
     status_code: EventStatusCode
     price_ranges: list[PriceRange]
-    event_url: Optional[str]   # URL from Discovery API (_links.web.href)
+    event_url: str | None      # URL from Discovery API (_links.web.href)
     raw_response: dict
 
 
 @dataclass
 class PageData:
     sections_available: list[str]
-    price_info: Optional[str]
+    price_info: str | None
     resale_detected: bool
     raw_snippet: str
 

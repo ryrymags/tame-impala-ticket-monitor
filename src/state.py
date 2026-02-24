@@ -5,8 +5,6 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timezone
-from typing import Optional
-
 logger = logging.getLogger(__name__)
 
 
@@ -18,7 +16,7 @@ class MonitorState:
         self._state: dict = {"events": {}}
         self.load()
 
-    def get_last_status(self, event_id: str) -> Optional[str]:
+    def get_last_status(self, event_id: str) -> str | None:
         """Get the last known status code for an event."""
         return self._event(event_id).get("last_status")
 
@@ -32,7 +30,7 @@ class MonitorState:
         old = self.get_last_status(event_id)
         return old is not None and old != new_status
 
-    def get_had_price_ranges(self, event_id: str) -> Optional[bool]:
+    def get_had_price_ranges(self, event_id: str) -> bool | None:
         """Return True/False based on whether price ranges were present last check, or None if never checked."""
         val = self._event(event_id).get("had_price_ranges")
         if val is None:
@@ -44,7 +42,7 @@ class MonitorState:
         self._event(event_id)["had_price_ranges"] = had_ranges
         self.save()
 
-    def get_last_check(self, event_id: str) -> Optional[datetime]:
+    def get_last_check(self, event_id: str) -> datetime | None:
         """Get the timestamp of the last successful check."""
         val = self._event(event_id).get("last_check")
         if val:
@@ -59,7 +57,7 @@ class MonitorState:
         self._event(event_id)["last_check"] = datetime.now(timezone.utc).isoformat()
         self.save()
 
-    def get_last_successful_check(self) -> Optional[datetime]:
+    def get_last_successful_check(self) -> datetime | None:
         """Get the global last successful check timestamp (across all runs)."""
         val = self._state.get("last_successful_check")
         if val:
@@ -74,7 +72,7 @@ class MonitorState:
         self._state["last_successful_check"] = datetime.now(timezone.utc).isoformat()
         self.save()
 
-    def get_monitor_start_time(self) -> Optional[datetime]:
+    def get_monitor_start_time(self) -> datetime | None:
         """Get the timestamp when monitoring first started."""
         val = self._state.get("monitor_started")
         if val:
@@ -90,7 +88,7 @@ class MonitorState:
             self._state["monitor_started"] = dt.isoformat()
             self.save()
 
-    def get_last_heartbeat_date(self) -> Optional[str]:
+    def get_last_heartbeat_date(self) -> str | None:
         """Get the date of the last heartbeat (YYYY-MM-DD)."""
         return self._state.get("last_heartbeat_date")
 
@@ -99,7 +97,7 @@ class MonitorState:
         self._state["last_heartbeat_date"] = date_str
         self.save()
 
-    def get_last_recap_date(self) -> Optional[str]:
+    def get_last_recap_date(self) -> str | None:
         """Get the date of the last daily recap (YYYY-MM-DD)."""
         return self._state.get("last_recap_date")
 

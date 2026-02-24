@@ -8,7 +8,6 @@ Ticketmaster's anti-bot systems. The monitor works fine without this.
 import json
 import logging
 import re
-from typing import Optional
 
 import requests
 
@@ -37,7 +36,7 @@ class PageChecker:
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
 
-    def check_page(self, event_url: str) -> Optional[PageData]:
+    def check_page(self, event_url: str) -> PageData | None:
         """Fetch the event page and try to extract embedded JSON data.
 
         Returns None if blocked, errored, or no useful data found.
@@ -67,7 +66,7 @@ class PageChecker:
         logger.debug("No structured data found on page %s", event_url)
         return None
 
-    def _extract_next_data(self, html: str) -> Optional[dict]:
+    def _extract_next_data(self, html: str) -> dict | None:
         """Extract __NEXT_DATA__ JSON from a Next.js page."""
         match = re.search(
             r'<script\s+id="__NEXT_DATA__"\s+type="application/json">(.*?)</script>',
@@ -82,7 +81,7 @@ class PageChecker:
             logger.debug("Failed to parse __NEXT_DATA__ JSON")
             return None
 
-    def _extract_json_ld(self, html: str) -> Optional[dict]:
+    def _extract_json_ld(self, html: str) -> dict | None:
         """Extract JSON-LD structured data."""
         match = re.search(
             r'<script\s+type="application/ld\+json">(.*?)</script>',
@@ -100,7 +99,7 @@ class PageChecker:
             logger.debug("Failed to parse JSON-LD")
             return None
 
-    def _parse_next_data(self, data: dict) -> Optional[PageData]:
+    def _parse_next_data(self, data: dict) -> PageData | None:
         """Try to extract ticket info from __NEXT_DATA__."""
         sections = []
         resale = False
@@ -138,7 +137,7 @@ class PageChecker:
             raw_snippet=raw_str,
         )
 
-    def _parse_json_ld(self, data: dict) -> Optional[PageData]:
+    def _parse_json_ld(self, data: dict) -> PageData | None:
         """Try to extract ticket info from JSON-LD."""
         if data.get("@type") not in ("Event", "MusicEvent"):
             return None

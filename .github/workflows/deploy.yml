@@ -19,6 +19,7 @@ jobs:
           key: ${{ secrets.VM_SSH_KEY }}
           script: |
             cd ~/tame-impala-ticket-monitor
+            PREV_COMMIT=$(git rev-parse HEAD)
             git pull origin main
             venv/bin/pip install -q -r requirements.txt
             sudo systemctl restart ticket-monitor
@@ -28,8 +29,13 @@ jobs:
               echo "Attempt $i: $STATUS"
               [ "$STATUS" = "active" ] && exit 0
             done
-            echo "Service failed to start"
+            echo "Service failed to start — rolling back to $PREV_COMMIT"
             sudo journalctl -u ticket-monitor --no-pager -n 20
+            git checkout "$PREV_COMMIT"
+            venv/bin/pip install -q -r requirements.txt
+            sudo systemctl restart ticket-monitor
+            sleep 3
+            sudo systemctl is-active ticket-monitor && echo "Rollback succeeded" || echo "Rollback also failed — manual intervention required"
             exit 1
 
       - name: Notify on failure

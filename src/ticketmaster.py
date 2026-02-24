@@ -3,7 +3,6 @@
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
 
 import requests
 
@@ -33,7 +32,7 @@ class TicketmasterClient:
         self._last_request_time: float = 0.0
         self._daily_call_count: int = 0
         self._daily_reset_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        self._last_rate_limit_info: Optional[RateLimitInfo] = None
+        self._last_rate_limit_info: RateLimitInfo | None = None
 
     # ---- Public methods ----
 

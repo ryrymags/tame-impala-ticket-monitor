@@ -2,11 +2,12 @@
 
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 from src.config import MonitorConfig, EventConfig
-from src.models import EventStatus, EventStatusCode, PriceRange
+from src.models import EventStatus, EventStatusCode, PageData, PriceRange
 from src.scheduler import MonitorScheduler
+from src.ticketmaster import NetworkError, RateLimitError, APIError
 
 
 def _make_config(**overrides) -> MonitorConfig:
@@ -223,3 +224,119 @@ class TestPriceRangeDetection:
         scheduler._check_event(_make_event_cfg())
 
         scheduler.state.set_had_price_ranges.assert_called_once_with("test-event", False)
+
+
+class TestErrorRecovery:
+    """Test main loop error handling and Discord alerts for unexpected errors."""
+
+    def _make_looping_scheduler(self):
+        """Scheduler wired to run one iteration then stop."""
+        config = _make_config(events=[_make_event_cfg()])
+        scheduler = _make_scheduler(config)
+        scheduler.client.is_budget_exhausted.return_value = False
+        scheduler.client.is_budget_warning.return_value = False
+        scheduler.client.get_daily_call_count.return_value = 0
+        scheduler.state.get_last_heartbeat_date.return_value = "2099-01-01"
+        scheduler.state.get_last_recap_date.return_value = "2099-01-01"
+        return scheduler
+
+    def test_unexpected_exception_sends_discord_alert(self):
+        """When an unexpected exception escapes the cycle, send_error is called."""
+        scheduler = self._make_looping_scheduler()
+        scheduler.client.get_event_status.side_effect = [RuntimeError("boom"), None]
+
+        # Stop after first error so we don't loop forever
+        call_count = 0
+        original_sleep = scheduler._interruptible_sleep
+        def stop_after_first(seconds):
+            scheduler.stop()
+        scheduler._interruptible_sleep = stop_after_first
+
+        scheduler.run()
+
+        scheduler.notifier.send_error.assert_called_once()
+        error_msg = scheduler.notifier.send_error.call_args[0][0]
+        assert "RuntimeError" in error_msg
+        assert "boom" in error_msg
+
+    def test_network_recovery_sends_discord_alert(self):
+        """When network recovers after being down, send_error is called with recovery message."""
+        scheduler = self._make_looping_scheduler()
+        # First call raises NetworkError (sets _network_down), second succeeds
+        scheduler.client.get_event_status.side_effect = [
+            NetworkError("connection refused"),
+            _make_event_status(),
+        ]
+        scheduler.state.get_last_status.return_value = "offsale"
+        scheduler.state.get_had_price_ranges.return_value = None
+
+        call_count = 0
+        def stop_after_two(seconds):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                scheduler.stop()
+        scheduler._interruptible_sleep = stop_after_two
+
+        scheduler.run()
+
+        # send_error should have been called for the network recovery
+        recovery_calls = [
+            c for c in scheduler.notifier.send_error.call_args_list
+            if "recovered" in c[0][0].lower()
+        ]
+        assert len(recovery_calls) == 1
+
+    def test_budget_exhausted_skips_cycle(self):
+        """When the API budget is exhausted, no event checks are made."""
+        config = _make_config(events=[_make_event_cfg()])
+        scheduler = _make_scheduler(config)
+        scheduler.client.is_budget_exhausted.return_value = True
+        scheduler.state.get_last_heartbeat_date.return_value = "2099-01-01"
+        scheduler.state.get_last_recap_date.return_value = "2099-01-01"
+
+        scheduler._run_cycle()
+
+        scheduler.client.get_event_status.assert_not_called()
+
+
+class TestPageCheckerResetLogic:
+    """Verify that a None page_data (blocked request) does not reset the resale flag."""
+
+    def _make_scheduler_for_page_check(self):
+        config = _make_config(events=[_make_event_cfg()], enable_page_check=True,
+                              page_check_interval_multiplier=1)
+        scheduler = _make_scheduler(config)
+        scheduler.client.is_budget_exhausted.return_value = False
+        scheduler.client.is_budget_warning.return_value = False
+        scheduler.state.get_last_status.return_value = "offsale"
+        scheduler.state.get_had_price_ranges.return_value = None
+        scheduler.state.get_had_page_resale.return_value = True
+        return scheduler
+
+    def test_none_page_data_does_not_reset_resale_flag(self):
+        """A blocked/errored page fetch (None) must not clear had_page_resale."""
+        scheduler = self._make_scheduler_for_page_check()
+        scheduler.client.get_event_status.return_value = _make_event_status()
+        scheduler._page_checker = MagicMock()
+        scheduler._page_checker.check_page.return_value = None  # blocked
+
+        scheduler._check_event(_make_event_cfg())
+
+        # set_had_page_resale must NOT have been called with False
+        for call_args in scheduler.state.set_had_page_resale.call_args_list:
+            assert call_args[0][1] is not False, \
+                "had_page_resale was reset to False on a blocked (None) page response"
+
+    def test_false_resale_detected_does_reset_flag(self):
+        """A successful page fetch with resale_detected=False should reset the flag."""
+        scheduler = self._make_scheduler_for_page_check()
+        scheduler.client.get_event_status.return_value = _make_event_status()
+        scheduler._page_checker = MagicMock()
+        scheduler._page_checker.check_page.return_value = PageData(
+            sections_available=[], price_info=None, resale_detected=False, raw_snippet=""
+        )
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.state.set_had_page_resale.assert_called_with("test-event", False)

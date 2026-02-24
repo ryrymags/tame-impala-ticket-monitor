@@ -3,7 +3,6 @@
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Optional
 
 from dateutil import tz
 
@@ -44,10 +43,11 @@ class MonitorScheduler:
         self._consecutive_errors = 0
         self._current_backoff = 0.0
         self._network_down = False
-        self._last_successful_check: Optional[datetime] = state.get_last_successful_check()
+        self._last_successful_check: datetime | None = state.get_last_successful_check()
         self._last_persisted_call_count: int = 0
         self._cycle_count: int = 0
-        self._page_checker: Optional[PageChecker] = PageChecker() if config.enable_page_check else None
+        self._page_checker: PageChecker | None = PageChecker() if config.enable_page_check else None
+        self._venue_tz = tz.gettz(config.timezone)
 
     def stop(self):
         """Signal the loop to stop."""
@@ -69,6 +69,7 @@ class MonitorScheduler:
                 if self._network_down:
                     logger.info("Network recovered")
                     self._network_down = False
+                    self.notifier.send_error("Network recovered — monitoring has resumed.")
 
             except NetworkError as e:
                 if not self._network_down:
@@ -102,6 +103,7 @@ class MonitorScheduler:
                 logger.exception("Unexpected error: %s", e)
                 self._consecutive_errors += 1
                 self._current_backoff = min(60 * self._consecutive_errors, self.config.max_backoff_seconds)
+                self.notifier.send_error(f"Unexpected monitor error: {type(e).__name__}: {e}")
 
             if not self._running:
                 break
@@ -260,8 +262,7 @@ class MonitorScheduler:
 
     def _get_interval(self) -> float:
         """Return the polling interval based on time of day."""
-        venue_tz = tz.gettz(self.config.timezone)
-        now = datetime.now(venue_tz)
+        now = datetime.now(self._venue_tz)
         hour = now.hour
 
         # Daytime: daytime_start_hour to daytime_end_hour
@@ -289,8 +290,7 @@ class MonitorScheduler:
 
     def _maybe_send_heartbeat(self):
         """Send a daily heartbeat if it hasn't been sent today."""
-        venue_tz = tz.gettz(self.config.timezone)
-        now = datetime.now(venue_tz)
+        now = datetime.now(self._venue_tz)
         today_str = now.strftime("%Y-%m-%d")
 
         if self.state.get_last_heartbeat_date() == today_str:
@@ -311,8 +311,7 @@ class MonitorScheduler:
 
     def _maybe_send_recap(self):
         """Send a daily recap at the configured hour (default 11PM)."""
-        venue_tz = tz.gettz(self.config.timezone)
-        now = datetime.now(venue_tz)
+        now = datetime.now(self._venue_tz)
         today_str = now.strftime("%Y-%m-%d")
 
         if self.state.get_last_recap_date() == today_str:

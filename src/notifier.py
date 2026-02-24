@@ -1,8 +1,8 @@
 """Discord webhook notification sender."""
 
 import logging
+import time
 from datetime import datetime, timezone
-from typing import Optional
 
 from dateutil import tz
 
@@ -22,6 +22,7 @@ class DiscordNotifier:
         self.webhook_url = webhook_url
         self.username = username
         self.ping_user_id = f"<@{ping_user_id}>" if ping_user_id else ""
+        self.session = requests.Session()
 
     def send_status_change(self, event_name: str, event_date: str, event_url: str,
                            old_status: str, new_status: str) -> bool:
@@ -45,7 +46,7 @@ class DiscordNotifier:
 
         # Only ping for onsale — that's when tickets are available
         mention = self.ping_user_id if new_status == "onsale" else ""
-        return self._send(embeds=[embed], content=mention)
+        return self._send(embeds=[embed], content=mention, retries=2)
 
     def send_price_range_appeared(self, event_name: str, event_date: str, event_url: str,
                                    price_min: float, price_max: float) -> bool:
@@ -70,7 +71,7 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed], content=self.ping_user_id)
+        return self._send(embeds=[embed], content=self.ping_user_id, retries=2)
 
     def send_page_resale_detected(self, event_name: str, event_date: str, event_url: str,
                                    sections: list[str], price_info: str | None) -> bool:
@@ -93,7 +94,7 @@ class DiscordNotifier:
             "footer": {"text": "Face Value Exchange Monitor"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        return self._send(embeds=[embed], content=self.ping_user_id)
+        return self._send(embeds=[embed], content=self.ping_user_id, retries=2)
 
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
@@ -112,7 +113,7 @@ class DiscordNotifier:
         return self._send(embeds=[embed])
 
     def send_heartbeat(self, daily_calls: int, uptime_hours: float,
-                       last_check: Optional[datetime]) -> bool:
+                       last_check: datetime | None) -> bool:
         """Send a daily heartbeat to confirm the monitor is alive."""
         last_check_str = last_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET") if last_check else "Never"
         daily_reset = "Midnight UTC"
@@ -194,8 +195,8 @@ class DiscordNotifier:
 
     # ---- Internal ----
 
-    def _send(self, embeds: list[dict], content: str = "") -> bool:
-        """Send a webhook payload to Discord."""
+    def _send(self, embeds: list[dict], content: str = "", retries: int = 0) -> bool:
+        """Send a webhook payload to Discord, with optional retries on transient failures."""
         payload = {
             "username": self.username,
             "embeds": embeds,
@@ -203,18 +204,27 @@ class DiscordNotifier:
         if content:
             payload["content"] = content
 
-        try:
-            resp = requests.post(self.webhook_url, json=payload, timeout=10)
-            if resp.status_code == 204:
-                logger.debug("Discord notification sent successfully")
-                return True
-            elif resp.status_code == 429:
-                logger.warning("Discord rate limited: %s", resp.text)
-                return False
-            else:
-                logger.error("Discord webhook error %d: %s", resp.status_code, resp.text[:200])
-                return False
-        except requests.RequestException as e:
-            logger.error("Discord webhook request failed: %s", e)
-            return False
+        for attempt in range(retries + 1):
+            try:
+                resp = self.session.post(self.webhook_url, json=payload, timeout=10)
+                if resp.status_code == 204:
+                    logger.debug("Discord notification sent successfully")
+                    return True
+                elif resp.status_code == 429:
+                    logger.warning("Discord rate limited: %s", resp.text)
+                    return False
+                else:
+                    logger.error("Discord webhook error %d: %s", resp.status_code, resp.text[:200])
+                    return False
+            except requests.RequestException as e:
+                if attempt < retries:
+                    delay = 2 ** attempt  # 1s, 2s
+                    logger.warning("Discord webhook request failed (attempt %d/%d): %s — retrying in %ds",
+                                   attempt + 1, retries + 1, e, delay)
+                    time.sleep(delay)
+                else:
+                    logger.error("Discord webhook request failed: %s", e)
+                    return False
+
+        return False
 
