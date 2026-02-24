@@ -118,7 +118,8 @@ class PageChecker:
                 if isinstance(val, dict):
                     name = val.get("name", val.get("section", key))
                     sections.append(str(name))
-                    if "resale" in str(val).lower():
+                    val_str = str(val).lower()
+                    if "resale" in val_str or "face value exchange" in val_str:
                         resale = True
 
         # Check for availability info
@@ -159,7 +160,13 @@ class PageChecker:
                 if price:
                     price_info = f"${price}"
                 avail = offer.get("availability", "")
-                if "resale" in str(avail).lower() or "exchange" in str(avail).lower():
+                name_str = name.lower()
+                if (
+                    "resale" in str(avail).lower()
+                    or "exchange" in str(avail).lower()
+                    or "face value exchange" in name_str
+                    or "resale" in name_str
+                ):
                     resale = True
 
         if not sections:

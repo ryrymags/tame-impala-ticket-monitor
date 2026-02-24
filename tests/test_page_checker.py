@@ -107,6 +107,21 @@ class TestParseNextData:
         assert result.resale_detected is True
         assert "Floor A" in result.sections_available
 
+    def test_detects_face_value_exchange_in_inventory(self):
+        checker = PageChecker()
+        data = {
+            "props": {
+                "pageProps": {
+                    "inventory": {
+                        "offer1": {"name": "Face Value Exchange Ticket", "section": "119"}
+                    }
+                }
+            }
+        }
+        result = checker._parse_next_data(data)
+        assert result is not None
+        assert result.resale_detected is True
+
     def test_detects_resale_via_availability_flag(self):
         checker = PageChecker()
         data = {
@@ -195,6 +210,17 @@ class TestParseJsonLd:
         result = checker._parse_json_ld(data)
         assert result is not None
         assert result.resale_detected is False
+
+    def test_detects_fve_in_offer_name(self):
+        checker = PageChecker()
+        data = {
+            "@type": "MusicEvent",
+            "offers": [{"name": "Face Value Exchange Ticket", "price": "419.60"}],
+        }
+        result = checker._parse_json_ld(data)
+        assert result is not None
+        assert result.resale_detected is True
+        assert result.price_info == "$419.60"
 
 
 # ---------------------------------------------------------------------------
