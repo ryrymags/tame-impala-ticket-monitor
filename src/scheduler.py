@@ -132,6 +132,9 @@ class MonitorScheduler:
     def _persist_api_calls(self):
         """Save new API calls from this run to persistent state."""
         current = self.client.get_daily_call_count()
+        if current < self._last_persisted_call_count:
+            # Client counter was reset at midnight UTC — re-sync our baseline
+            self._last_persisted_call_count = 0
         delta = current - self._last_persisted_call_count
         if delta > 0:
             self.state.add_daily_api_calls(delta)
