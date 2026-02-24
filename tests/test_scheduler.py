@@ -95,6 +95,63 @@ def _make_event_cfg() -> EventConfig:
     )
 
 
+class TestStatusChangeDetection:
+    """Test status change and first-check notification logic."""
+
+    def _make_scheduler_for_check(self, last_status=None):
+        config = _make_config(events=[_make_event_cfg()])
+        scheduler = _make_scheduler(config)
+        scheduler.client.is_budget_exhausted.return_value = False
+        scheduler.client.is_budget_warning.return_value = False
+        scheduler.state.get_last_status.return_value = last_status
+        scheduler.state.get_had_price_ranges.return_value = False
+        scheduler.state.get_daily_activity.return_value = {}
+        scheduler.state.record_daily_activity.return_value = None
+        scheduler.state.set_last_check.return_value = None
+        scheduler.state.set_last_successful_check.return_value = None
+        scheduler.state.set_last_status.return_value = None
+        scheduler.state.set_had_price_ranges.return_value = None
+        return scheduler
+
+    def test_status_change_triggers_notification(self):
+        """Normal case: offsale → onsale sends a status change notification."""
+        scheduler = self._make_scheduler_for_check(last_status="offsale")
+        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_status_change.assert_called_once()
+
+    def test_first_check_onsale_triggers_notification(self):
+        """If old_status is None and the event is onsale, notify — covers restarts with fresh state."""
+        scheduler = self._make_scheduler_for_check(last_status=None)
+        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_status_change.assert_called_once()
+
+    def test_first_check_offsale_no_notification(self):
+        """If old_status is None and the event is offsale, don't alert — nothing actionable."""
+        scheduler = self._make_scheduler_for_check(last_status=None)
+        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.OFFSALE)
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_status_change.assert_not_called()
+        scheduler.notifier.send_sold_out_again.assert_not_called()
+
+    def test_no_change_no_notification(self):
+        """If status hasn't changed, no notification is sent."""
+        scheduler = self._make_scheduler_for_check(last_status="offsale")
+        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.OFFSALE)
+
+        scheduler._check_event(_make_event_cfg())
+
+        scheduler.notifier.send_status_change.assert_not_called()
+        scheduler.notifier.send_sold_out_again.assert_not_called()
+
+
 class TestPriceRangeDetection:
     """Test that price range appearances trigger notifications independent of status changes."""
 

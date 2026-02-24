@@ -177,8 +177,18 @@ class MonitorScheduler:
 
         # Detect status changes
         old_status = self.state.get_last_status(event_id)
-        if old_status and self.state.has_status_changed(event_id, status.status_code.value):
-            logger.info("[%s] Status changed: %s -> %s", event_cfg.name, old_status, status.status_code.value)
+        new_status_value = status.status_code.value
+
+        # Fire when status has changed from a known state, OR when we first see the
+        # event as onsale (covers restarts/fresh state where old_status is None).
+        status_changed = old_status is not None and old_status != new_status_value
+        first_seen_onsale = old_status is None and status.status_code == EventStatusCode.ONSALE
+
+        if status_changed or first_seen_onsale:
+            if status_changed:
+                logger.info("[%s] Status changed: %s -> %s", event_cfg.name, old_status, new_status_value)
+            else:
+                logger.info("[%s] First check: event is already %s — notifying", event_cfg.name, new_status_value)
 
             if self.config.notify_on_status_change:
                 if status.status_code == EventStatusCode.OFFSALE:
@@ -186,7 +196,7 @@ class MonitorScheduler:
                 else:
                     self.notifier.send_status_change(
                         event_cfg.name, event_cfg.date, event_url,
-                        old_status, status.status_code.value,
+                        old_status or "unknown", new_status_value,
                     )
 
         self.state.set_last_status(event_id, status.status_code.value)
