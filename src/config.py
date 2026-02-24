@@ -134,6 +134,16 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
     log_max_file_size_mb = safe_int(logging_cfg, "max_file_size_mb", 10, "logging.max_file_size_mb")
     log_backup_count = safe_int(logging_cfg, "backup_count", 3, "logging.backup_count")
 
+    # Validate hour values are within 0-23
+    for val, label in [
+        (daytime_start_hour, "polling.daytime_start_hour"),
+        (daytime_end_hour, "polling.daytime_end_hour"),
+        (daily_heartbeat_hour, "notifications.daily_heartbeat_hour"),
+        (daily_recap_hour, "notifications.daily_recap_hour"),
+    ]:
+        if not (0 <= val <= 23):
+            errors.append(f"{label} must be between 0 and 23, got: {val}")
+
     if errors:
         print("Configuration errors:")
         for e in errors:

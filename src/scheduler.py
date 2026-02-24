@@ -10,6 +10,7 @@ from dateutil import tz
 from .config import EventConfig, MonitorConfig
 from .models import EventStatusCode
 from .notifier import DiscordNotifier
+from .page_checker import PageChecker
 from .state import MonitorState
 from .ticketmaster import (
     APIError,
@@ -45,6 +46,8 @@ class MonitorScheduler:
         self._network_down = False
         self._last_successful_check: Optional[datetime] = state.get_last_successful_check()
         self._last_persisted_call_count: int = 0
+        self._cycle_count: int = 0
+        self._page_checker: Optional[PageChecker] = PageChecker() if config.enable_page_check else None
 
     def stop(self):
         """Signal the loop to stop."""
@@ -103,10 +106,7 @@ class MonitorScheduler:
             if not self._running:
                 break
 
-            # If network just recovered, run an immediate check
-            if self._network_down is False and self._consecutive_errors == 0 and self._current_backoff == 0:
-                sleep_time = self._get_interval()
-            elif self._current_backoff > 0:
+            if self._current_backoff > 0:
                 sleep_time = self._current_backoff
             else:
                 sleep_time = self._get_interval()
@@ -152,6 +152,8 @@ class MonitorScheduler:
         if self.client.is_budget_warning():
             logger.warning("API budget warning: %d / 5,000 calls used today",
                            self.client.get_daily_call_count())
+
+        self._cycle_count += 1
 
         for event_cfg in self.config.events:
             if not self._running:
@@ -210,14 +212,29 @@ class MonitorScheduler:
         had_ranges = self.state.get_had_price_ranges(event_id)
         if had_ranges is False and has_ranges:
             # Price ranges appeared where there were none before
-            mins = [p.min_price for p in status.price_ranges if p.min_price is not None]
-            maxs = [p.max_price for p in status.price_ranges if p.max_price is not None]
+            mins = [p.min_price for p in status.price_ranges if p.min_price > 0]
+            maxs = [p.max_price for p in status.price_ranges if p.max_price > 0]
             if mins and maxs:
                 logger.info("[%s] Price ranges appeared: $%.0f – $%.0f", event_cfg.name, min(mins), max(maxs))
                 self.notifier.send_price_range_appeared(
                     event_cfg.name, event_cfg.date, event_url, min(mins), max(maxs),
                 )
         self.state.set_had_price_ranges(event_id, has_ranges)
+
+        # Tier 3: Page check — scrape the event page for FVE/resale listings
+        if self._page_checker and self._cycle_count % self.config.page_check_interval_multiplier == 0:
+            page_data = self._page_checker.check_page(event_url)
+            if page_data and page_data.resale_detected:
+                if not self.state.get_had_page_resale(event_id):
+                    logger.info("[%s] Page check: resale listing detected", event_cfg.name)
+                    self.notifier.send_page_resale_detected(
+                        event_cfg.name, event_cfg.date, event_url,
+                        page_data.sections_available, page_data.price_info,
+                    )
+                    self.state.set_had_page_resale(event_id, True)
+            elif page_data is None and self.state.get_had_page_resale(event_id):
+                # Resale listing has disappeared — reset so we re-notify if it comes back
+                self.state.set_had_page_resale(event_id, False)
 
         # Track for daily recap
         self.state.record_daily_activity(event_id, status.status_code.value, has_ranges)

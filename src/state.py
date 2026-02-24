@@ -128,6 +128,10 @@ class MonitorState:
 
     def record_daily_activity(self, event_id: str, status: str, has_price_ranges: bool):
         """Track what happened today for the daily recap."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._state.get("daily_activity_date") != today:
+            self._state["daily_activity"] = {}
+            self._state["daily_activity_date"] = today
         activity = self._state.setdefault("daily_activity", {})
         ev_activity = activity.setdefault(event_id, {
             "statuses_seen": [],
@@ -137,6 +141,7 @@ class MonitorState:
             ev_activity["statuses_seen"].append(status)
         if has_price_ranges:
             ev_activity["price_ranges_seen"] = True
+        self.save()
 
     def get_daily_activity(self) -> dict:
         """Get the daily activity data."""
@@ -145,6 +150,16 @@ class MonitorState:
     def reset_daily_activity(self):
         """Reset daily activity tracking for a new day."""
         self._state["daily_activity"] = {}
+        self._state["daily_activity_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.save()
+
+    def get_had_page_resale(self, event_id: str) -> bool:
+        """True if page checker has already detected and notified about resale for this event."""
+        return bool(self._event(event_id).get("had_page_resale", False))
+
+    def set_had_page_resale(self, event_id: str, value: bool):
+        """Record whether page-check resale has been detected and notified."""
+        self._event(event_id)["had_page_resale"] = value
         self.save()
 
     # ---- Persistence ----

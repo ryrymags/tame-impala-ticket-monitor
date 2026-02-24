@@ -23,7 +23,7 @@ jobs:
           git checkout main
           git merge --squash origin/${{ github.ref_name }}
           COMMIT_MSG=$(git log main..origin/${{ github.ref_name }} --reverse --format='%s' | head -1)
-          git commit -m "$COMMIT_MSG"
+          git commit -m "${COMMIT_MSG:-Auto-merged from ${{ github.ref_name }}}"
           git push origin main
 
       - name: Trigger deploy

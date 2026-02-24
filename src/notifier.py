@@ -15,6 +15,8 @@ COLOR_GREEN = 0x00FF00    # Test notification / success
 COLOR_BLUE = 0x3498DB      # Status change / informational
 COLOR_RED = 0xE74C3C       # Error or back to sold out
 
+PING_USER = "<@206908742770360320>"
+
 
 class DiscordNotifier:
     """Sends formatted notifications to a Discord webhook."""
@@ -44,7 +46,7 @@ class DiscordNotifier:
         }
 
         # Only ping for onsale — that's when tickets are available
-        mention = "<@206908742770360320>" if new_status == "onsale" else ""
+        mention = PING_USER if new_status == "onsale" else ""
         return self._send(embeds=[embed], content=mention)
 
     def send_price_range_appeared(self, event_name: str, event_date: str, event_url: str,
@@ -70,7 +72,30 @@ class DiscordNotifier:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        return self._send(embeds=[embed], content="<@206908742770360320>")
+        return self._send(embeds=[embed], content=PING_USER)
+
+    def send_page_resale_detected(self, event_name: str, event_date: str, event_url: str,
+                                   sections: list[str], price_info: str | None) -> bool:
+        """Notify when the page checker detects a resale/FVE listing on the event page."""
+        detail = f"Sections: {', '.join(sections)}" if sections else "Check the event page for details."
+        if price_info:
+            detail += f" | Price: **{price_info}**"
+        embed = {
+            "title": f"Resale Detected on Page: {event_name}",
+            "url": event_url,
+            "color": COLOR_BLUE,
+            "description": (
+                "The page checker found a resale or Face Value Exchange listing on "
+                f"the Ticketmaster event page.\n{detail}"
+            ),
+            "fields": [
+                {"name": "Date", "value": event_date, "inline": True},
+                {"name": "Action", "value": f"[Check Ticketmaster]({event_url})", "inline": False},
+            ],
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        return self._send(embeds=[embed], content=PING_USER)
 
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
