@@ -232,7 +232,7 @@ class MonitorScheduler:
                         page_data.sections_available, page_data.price_info,
                     )
                     self.state.set_had_page_resale(event_id, True)
-            elif page_data is None and self.state.get_had_page_resale(event_id):
+            elif page_data is not None and not page_data.resale_detected and self.state.get_had_page_resale(event_id):
                 # Resale listing has disappeared — reset so we re-notify if it comes back
                 self.state.set_had_page_resale(event_id, False)
 

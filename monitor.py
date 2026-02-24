@@ -96,7 +96,7 @@ def run_test(config_path: str):
 
     # 3. Discord webhook
     print("[3/3] Sending test Discord notification...")
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
     if notifier.send_test():
         print("      Discord webhook working — check your channel!")
     else:
@@ -112,7 +112,7 @@ def run_recap(config_path: str):
     """Send the daily recap to Discord immediately."""
     config = load_config(config_path)
     client = TicketmasterClient(config.api_key)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
     state = MonitorState()
 
     scheduler = MonitorScheduler(
@@ -134,7 +134,7 @@ def run_recap(config_path: str):
 def run_heartbeat(config_path: str):
     """Send a heartbeat to Discord immediately."""
     config = load_config(config_path)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
     state = MonitorState()
 
     monitor_started = state.get_monitor_start_time() or datetime.now(timezone.utc)
@@ -161,7 +161,7 @@ def run_monitor(config_path: str, once: bool = False):
     logger = logging.getLogger("monitor")
 
     client = TicketmasterClient(config.api_key)
-    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username)
+    notifier = DiscordNotifier(config.discord_webhook_url, config.discord_username, config.discord_ping_user_id)
     state = MonitorState()
     start_time = datetime.now(timezone.utc)
     state.set_monitor_start_time(start_time)  # Records only on first-ever run

@@ -24,6 +24,7 @@ class MonitorConfig:
     # Discord
     discord_webhook_url: str
     discord_username: str
+    discord_ping_user_id: str
 
     # Events
     events: list[EventConfig]
@@ -154,6 +155,7 @@ def load_config(path: str = "config.yaml") -> MonitorConfig:
         api_key=api_key,
         discord_webhook_url=webhook_url,
         discord_username=discord.get("username", "Ticket Monitor"),
+        discord_ping_user_id=discord.get("ping_user_id", ""),
         events=events,
         daytime_interval_seconds=daytime_interval_seconds,
         overnight_interval_seconds=overnight_interval_seconds,

@@ -12,6 +12,7 @@ from src.scheduler import MonitorScheduler
 def _make_config(**overrides) -> MonitorConfig:
     defaults = dict(
         api_key="test", discord_webhook_url="http://test", discord_username="Test",
+        discord_ping_user_id="",
         events=[],
         daytime_interval_seconds=30, overnight_interval_seconds=300,
         daytime_start_hour=8, daytime_end_hour=1, backoff_multiplier=1.5,

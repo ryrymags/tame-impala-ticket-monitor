@@ -22,6 +22,9 @@ ticketmaster:
 discord:
   webhook_url: "YOUR_WEBHOOK_URL_HERE"
   username: "Ticketmaster"         # Display name in Discord
+  ping_user_id: ""                 # Discord user ID to @mention for ticket alerts (e.g. "206908742770360320")
+                                   # Find yours: Discord > Settings > Advanced > Enable Developer Mode,
+                                   # then right-click your name and "Copy User ID". Leave empty to disable pings.
 
 # ---- Events to Monitor ----
 # These are the two Tame Impala "Deadbeat Tour" shows at TD Garden.

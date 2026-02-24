@@ -60,14 +60,14 @@ class TestStatusChangeMention:
     """Verify that onsale status changes include a user mention."""
 
     def test_onsale_includes_mention(self):
-        notifier = DiscordNotifier(webhook_url="https://test")
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="123456789")
         with patch.object(notifier, "_send", return_value=True) as mock_send:
             notifier.send_status_change("Test", "2026-07-28", "http://test", "offsale", "onsale")
             content = mock_send.call_args[1].get("content", "")
             assert "<@" in content
 
     def test_offsale_no_mention(self):
-        notifier = DiscordNotifier(webhook_url="https://test")
+        notifier = DiscordNotifier(webhook_url="https://test", ping_user_id="123456789")
         with patch.object(notifier, "_send", return_value=True) as mock_send:
             notifier.send_status_change("Test", "2026-07-28", "http://test", "onsale", "offsale")
             content = mock_send.call_args[1].get("content", "")
