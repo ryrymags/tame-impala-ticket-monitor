@@ -42,6 +42,15 @@ class MonitorState:
         self._event(event_id)["had_price_ranges"] = had_ranges
         self.save()
 
+    def get_last_price_key(self, event_id: str) -> str | None:
+        """Get the last recorded price range key (for detecting value changes)."""
+        return self._event(event_id).get("last_price_key")
+
+    def set_last_price_key(self, event_id: str, key: str):
+        """Record the current price range key."""
+        self._event(event_id)["last_price_key"] = key
+        self.save()
+
     def get_last_check(self, event_id: str) -> datetime | None:
         """Get the timestamp of the last successful check."""
         val = self._event(event_id).get("last_check")

@@ -199,28 +199,39 @@ class MonitorScheduler:
 
             if self.config.notify_on_status_change:
                 if status.status_code == EventStatusCode.OFFSALE:
-                    self.notifier.send_sold_out_again(event_cfg.name, event_cfg.date, event_url)
+                    sent = self.notifier.send_sold_out_again(event_cfg.name, event_cfg.date, event_url)
                 else:
-                    self.notifier.send_status_change(
+                    sent = self.notifier.send_status_change(
                         event_cfg.name, event_cfg.date, event_url,
                         old_status or "unknown", new_status_value,
                     )
+                if not sent:
+                    # Don't update state — retry notification next cycle
+                    logger.warning("[%s] Discord notification failed — will retry next cycle", event_cfg.name)
+                    return
 
         self.state.set_last_status(event_id, status.status_code.value)
 
-        # Detect price range appearances — catches cases where Ticketmaster doesn't
-        # flip the status code but FVE listings show up with price data
+        # Detect price range changes — catches cases where Ticketmaster doesn't
+        # flip the status code but FVE listings show up with price data.
+        # Compares actual price values (not just presence) so we detect new FVE
+        # price ranges even when the event already has original-sale prices.
+        current_price_key = self._price_range_key(status.price_ranges)
+        last_price_key = self.state.get_last_price_key(event_id)
         has_ranges = len(status.price_ranges) > 0
-        had_ranges = self.state.get_had_price_ranges(event_id)
-        if had_ranges is False and has_ranges:
-            # Price ranges appeared where there were none before
+
+        if last_price_key is not None and current_price_key != last_price_key and has_ranges:
             mins = [p.min_price for p in status.price_ranges if p.min_price > 0]
             maxs = [p.max_price for p in status.price_ranges if p.max_price > 0]
             if mins and maxs:
-                logger.info("[%s] Price ranges appeared: $%.0f – $%.0f", event_cfg.name, min(mins), max(maxs))
-                self.notifier.send_price_range_appeared(
+                logger.info("[%s] Price ranges changed: $%.0f – $%.0f", event_cfg.name, min(mins), max(maxs))
+                sent = self.notifier.send_price_range_appeared(
                     event_cfg.name, event_cfg.date, event_url, min(mins), max(maxs),
                 )
+                if not sent:
+                    logger.warning("[%s] Discord price notification failed — will retry next cycle", event_cfg.name)
+                    return
+        self.state.set_last_price_key(event_id, current_price_key)
         self.state.set_had_price_ranges(event_id, has_ranges)
 
         # Tier 3: Page check — scrape the event page for FVE/resale listings
@@ -257,6 +268,14 @@ class MonitorScheduler:
                 "price_ranges_seen": ev_activity.get("price_ranges_seen", False),
             })
         return summaries
+
+    @staticmethod
+    def _price_range_key(price_ranges) -> str:
+        """Build a comparable key from price ranges so we detect value changes."""
+        if not price_ranges:
+            return ""
+        parts = sorted(f"{p.type}:{p.min_price:.2f}-{p.max_price:.2f}" for p in price_ranges)
+        return "|".join(parts)
 
     # ---- Scheduling helpers ----
 

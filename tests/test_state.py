@@ -106,6 +106,31 @@ class TestPriceRangeTracking:
         assert state.get_had_price_ranges("event-2") is False
 
 
+class TestPriceKeyTracking:
+    def test_initial_price_key_is_none(self, state):
+        assert state.get_last_price_key("event-1") is None
+
+    def test_set_and_get_price_key(self, state):
+        state.set_last_price_key("event-1", "standard:59.50-209.50")
+        assert state.get_last_price_key("event-1") == "standard:59.50-209.50"
+
+    def test_empty_key(self, state):
+        state.set_last_price_key("event-1", "")
+        assert state.get_last_price_key("event-1") == ""
+
+    def test_persists_across_instances(self, state_file):
+        state1 = MonitorState(state_file=state_file)
+        state1.set_last_price_key("event-1", "standard:50.00-150.00")
+        state2 = MonitorState(state_file=state_file)
+        assert state2.get_last_price_key("event-1") == "standard:50.00-150.00"
+
+    def test_independent_per_event(self, state):
+        state.set_last_price_key("event-1", "key-a")
+        state.set_last_price_key("event-2", "key-b")
+        assert state.get_last_price_key("event-1") == "key-a"
+        assert state.get_last_price_key("event-2") == "key-b"
+
+
 class TestHeartbeat:
     def test_initial_heartbeat_is_none(self, state):
         assert state.get_last_heartbeat_date() is None

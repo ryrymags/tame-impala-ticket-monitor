@@ -64,11 +64,12 @@ notifications:
 
 # ---- Optional Features ----
 # Page checker (Tier 3): Fetches the Ticketmaster event page HTML to extract
-# embedded JSON for richer data. May get blocked by anti-bot systems.
-# Leave disabled unless you want to experiment.
+# embedded JSON for richer data. This is critical for detecting Face Value
+# Exchange listings, which often don't change the Discovery API status.
+# May get blocked by anti-bot systems on some requests (handled gracefully).
 optional:
-  enable_page_check: false
-  page_check_interval_multiplier: 5  # Only run page check every Nth cycle
+  enable_page_check: true
+  page_check_interval_multiplier: 3  # Run page check every 3rd cycle (~90 seconds)
 
 # ---- Logging ----
 # level: DEBUG, INFO, WARNING, ERROR
