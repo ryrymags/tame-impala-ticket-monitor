@@ -4,5 +4,9 @@ venv/
 .venv/
 config.yaml
 state.json
+state.json.lock
+state.json.bak.*
+.Rhistory
+secrets/
 logs/
 *.tmp

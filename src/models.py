@@ -1,53 +1,36 @@
 """Data models for the ticket monitor."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 
-class EventStatusCode(Enum):
-    ONSALE = "onsale"
-    OFFSALE = "offsale"
-    CANCELLED = "cancelled"
-    POSTPONED = "postponed"
-    RESCHEDULED = "rescheduled"
-    UNKNOWN = "unknown"
-
-    @classmethod
-    def from_str(cls, value: str) -> "EventStatusCode":
-        try:
-            return cls(value.lower())
-        except ValueError:
-            return cls.UNKNOWN
+class ProbeSignalType(Enum):
+    NONE = "none"
+    DOM = "dom"
+    NETWORK = "network"
+    DOM_AND_NETWORK = "dom+network"
 
 
 @dataclass
-class PriceRange:
-    type: str        # "standard", "resale", etc.
-    currency: str
-    min_price: float
-    max_price: float
-
-
-@dataclass
-class EventStatus:
+class ProbeResult:
     event_id: str
-    status_code: EventStatusCode
-    price_ranges: list[PriceRange]
-    event_url: str | None      # URL from Discovery API (_links.web.href)
-    raw_response: dict
+    event_url: str
+    available: bool
+    blocked: bool
+    challenge_detected: bool
+    signal_type: ProbeSignalType
+    signal_confidence: float
+    price_summary: str | None
+    section_summary: str | None
+    raw_indicators: dict[str, Any]
+    listing_summary: str | None = None
 
 
 @dataclass
-class PageData:
-    sections_available: list[str]
-    price_info: str | None
-    resale_detected: bool
-    raw_snippet: str
-
-
-@dataclass
-class RateLimitInfo:
-    limit: int
-    available: int
-    over: int
-    reset_seconds: int
+class DetectionDecision:
+    should_alert: bool
+    signature: str
+    reason: str

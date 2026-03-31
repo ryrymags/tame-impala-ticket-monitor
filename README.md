@@ -1,175 +1,284 @@
 # Tame Impala Face Value Exchange Monitor
 
-Automated monitor that checks Ticketmaster for Face Value Exchange resale tickets to two sold-out **Tame Impala "The Deadbeat Tour"** concerts at **TD Garden, Boston** and sends Discord notifications when tickets matching your criteria appear.
+> **STATUS: PAUSED** — Migrated to `gui-concert-monitor` as the primary monitor. All LaunchAgents for this version have been unloaded and moved to `~/Library/LaunchAgents/disabled/`. Do not re-enable without disabling the GUI version first to avoid duplicate webhook notifications.
 
-## What This Does
+Browser-first monitor for Ticketmaster Face Value Exchange inventory on:
 
-Both shows (July 28 & 29, 2026) are sold out. Ticketmaster's **Face Value Exchange** allows original buyers to resell their tickets at face value through Ticketmaster's official platform — no scalper markups. This monitor polls the Ticketmaster Discovery API every **30 seconds** during active hours looking for:
+- July 28, 2026 (TD Garden, Boston)
+- July 29, 2026 (TD Garden, Boston)
 
-- Status changes (e.g., `offsale` → `onsale`, which signals resale listings may have appeared)
-- Price range data appearing on previously sold-out events
+This rebuild uses a persisted authenticated browser session (Playwright) as the primary signal source.
 
-When something changes, it sends a Discord notification with a direct purchase link.
+Session persistence is best-effort. You can run with:
+- `browser.session_mode: storage_state` (legacy `secrets/tm_storage_state.json`)
+- `browser.session_mode: persistent_profile` (legacy `secrets/tm_profile`)
+- `browser.session_mode: cdp_attach` (recommended with dedicated real Google Chrome profile)
 
-## Events Monitored
+Ticketmaster can still expire/invalidate sessions or present anti-bot challenges.
 
-| Show | Date | Venue | Discovery API ID |
-|------|------|-------|-----------------|
-| Night 1 | July 28, 2026 | TD Garden, Boston | `Za5ju3rKuqZDexDqkBlMyehlJWXnwBnVa-` |
-| Night 2 | July 29, 2026 | TD Garden, Boston | `Za5ju3rKuqZDdqr7bcuPs7uyUCc6YkjYH2` |
+## What Changed
 
-> **Note:** The Discovery API uses different event IDs than the ones in website URLs. The website legacy IDs (e.g., `01006430FEAADAD2`) do not work with the API.
+- Primary detection now comes from real page/session signals (DOM + network responses).
+- Alerts are deduped by availability signature with cooldown.
+- Explicit outage detection for blocked/challenge/blind checks.
+- Critical outage alerts + recovery alerts so failures are never silent.
 
-## How It Detects Tickets
+## Quick Start
 
-The monitor uses the **Ticketmaster Discovery API v2** (free Consumer Key):
+1. Install dependencies:
 
-**Endpoint:** `https://app.ticketmaster.com/discovery/v2/events/{id}.json?apikey=KEY`
-
-Two independent detection triggers, either of which pings you on Discord:
-
-1. **Status change** — The event status flips from `offsale` → `onsale`. For a sold-out show, this typically means Face Value Exchange resale has opened.
-2. **Price range appearance** — `priceRanges` data shows up in the API response where there was none before. Catches cases where FVE listings appear without a status change.
-
-### Discord Notifications
-- **Blue** (`#3498DB`) — Status changes, price range appearances, heartbeat, and daily recap
-- **Red** (`#E74C3C`) — Back to sold out, or monitor errors
-- **Green** (`#00FF00`) — Test notification (from `--test`)
-
-## Polling Strategy
-
-Two-tier polling based on time of day (US/Eastern timezone):
-
-| Period | Hours | Interval | Rationale |
-|--------|-------|----------|-----------|
-| Daytime | 8 AM – 1 AM ET | Every 30 seconds | Active hours, most likely time for listings |
-| Overnight | 1 AM – 8 AM ET | Every 5 minutes | Low activity, save API budget |
-
-### API Budget
-- **Rate limit:** 5 requests/second, 5,000 requests/day
-- Each check cycle makes 2 Discovery API calls (one per event)
-- At 30-second intervals during daytime (17 hours): ~4,080 calls + ~168 overnight = **~4,250 calls/day**
-- Leaves ~750 calls of headroom for manual tests and edge cases
-- The monitor tracks daily usage and warns at 4,000 calls, stops at 5,000
-
-## File Structure
-
-```
-tame-impala-ticket-monitor/
-├── .github/
-│   └── workflows/
-│       ├── monitor.yml          # CI: runs test suite on PRs and pushes to main
-│       ├── deploy.yml           # CD: SSH deploys to Oracle VM and restarts service
-│       └── auto-merge.yml       # Squash-merges claude/** branches to main, triggers deploy
-├── deploy/
-│   └── setup.sh                 # One-time VM setup script (venv, deps, systemd service)
-├── src/
-│   ├── __init__.py              # Package marker
-│   ├── config.py                # YAML config loader with env var overrides
-│   ├── models.py                # Dataclasses (EventStatus, PriceRange, etc.)
-│   ├── notifier.py              # Discord webhook sender
-│   ├── page_checker.py          # Optional HTML page scraper (disabled by default)
-│   ├── scheduler.py             # Main monitoring loop with adaptive intervals
-│   ├── state.py                 # JSON state persistence (status, price ranges, checks)
-│   └── ticketmaster.py          # Discovery API client with rate limiting
-├── tests/                       # pytest test suite
-├── .gitignore
-├── config.example.yaml          # Template config (copy to config.yaml and fill in values)
-├── monitor.py                   # Entry point (--test, --once, --recap, --heartbeat, --verbose)
-├── pyproject.toml               # Project metadata and ruff/pytest config
-├── requirements.txt             # Python dependencies
-└── README.md                    # This file
-```
-
-## How It Runs
-
-### Production (Oracle VM + systemd)
-
-The monitor runs as a persistent `systemd` service on an Oracle Cloud free-tier VM:
-
-1. `monitor.py` runs continuously, polling in a loop with adaptive intervals (30s daytime / 5min overnight)
-2. `state.json` is stored on disk — survives restarts, tracks statuses and price ranges
-3. Logs go to `journald` (`sudo journalctl -u ticket-monitor -f`)
-
-**Deploy pipeline:**
-- Push to a `claude/**` branch → `auto-merge.yml` squash-merges to `main`
-- Push to `main` → `deploy.yml` SSH's into the VM, runs `git pull`, reinstalls deps, and restarts the service
-- `monitor.yml` runs the `pytest` test suite on every PR and push to `main`
-
-**Secrets** are stored in GitHub repo Settings → Secrets:
-- `TM_API_KEY` — Ticketmaster Consumer Key
-- `DISCORD_WEBHOOK_URL` — Discord webhook URL
-- `VM_HOST`, `VM_USER`, `VM_SSH_KEY` — SSH credentials for the Oracle VM
-
-`TM_API_KEY` and `DISCORD_WEBHOOK_URL` override `config.yaml` values via environment variables (see `src/config.py`). On the VM, `config.yaml` holds the actual values directly.
-
-**First-time VM setup:**
 ```bash
-git clone https://github.com/ryrymags/tame-impala-ticket-monitor
-cd tame-impala-ticket-monitor
+python3 -m pip install -r requirements.txt
+python3 -m playwright install chromium
+```
+
+Install Google Chrome if using `cdp_attach` mode:
+
+```bash
+open "https://www.google.com/chrome/"
+```
+
+2. Configure:
+
+```bash
 cp config.example.yaml config.yaml
-nano config.yaml  # fill in API key and webhook URL
-bash deploy/setup.sh
+# edit config.yaml with Discord webhook
 ```
 
-### Local Usage
+3. Bootstrap Ticketmaster session (local, headed):
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Test everything (config, API key, event IDs, Discord webhook)
-python monitor.py --test
-
-# Run one check and exit
-python monitor.py --once
-
-# Run continuously (polls until interrupted)
-python monitor.py
-
-# Debug mode
-python monitor.py --verbose
+python3 monitor.py --bootstrap-session
 ```
 
-## Configuration
+In `storage_state` mode this creates `secrets/tm_storage_state.json` with `0600` permissions.
+In `persistent_profile` mode this initializes your dedicated profile directory (default `secrets/tm_profile`).
+In `cdp_attach` mode this opens the event page in your dedicated Chrome host profile for manual login.
 
-All settings are in `config.yaml`. Key sections:
+4. Validate setup:
 
-- **`ticketmaster.api_key`** — Your Ticketmaster Consumer Key (free from developer.ticketmaster.com)
-- **`discord.webhook_url`** — Your Discord webhook URL
-- **`events`** — List of events to monitor (Discovery API IDs, names, dates, URLs)
-- **`polling`** — Interval timing (30s daytime / 5min overnight), backoff settings, timezone
-- **`notifications`** — Status change alerts, daily heartbeat/recap hours
+```bash
+python3 monitor.py --doctor
+```
 
-## State Management
+5. Run monitor:
 
-The monitor persists state to `state.json` (excluded from git via `.gitignore`):
+```bash
+python3 monitor.py
+```
 
-- **Last known status** per event — detects `offsale` → `onsale` transitions
-- **Price range presence** per event — detects when price data appears
-- **Last heartbeat date** — ensures only one heartbeat per day
-- **Last check timestamp** — reported in heartbeat messages
+## Run 24/7 On Mac (Recommended for your setup)
 
-State is saved atomically (write to temp file, then `os.replace`) to prevent corruption. On the VM, `state.json` lives on disk and persists across service restarts automatically.
+If Ticketmaster blocks cloud VM IPs, run from your Mac directly:
 
-## Error Handling
+```bash
+cd /Users/rymag/code/tame-impala-ticket-monitor-main
+bash deploy/setup_macos.sh
+```
 
-- **Network errors** (connection failures, timeouts): Do NOT count toward daily API budget. Monitor retries with increasing backoff (30s increments, capped at 10 min). Logs recovery when network returns.
-- **Rate limiting** (HTTP 429): Respects `Retry-After` header. Backs off for the specified duration.
-- **Authentication errors (401/403)**: Indicates revoked or invalid API key. Logged and surfaced.
-- **Event not found (404)**: Skips that event for the current cycle, continues checking others.
-- **Server errors (5xx)**: Exponential backoff with multiplier from config.
+That script will:
+- enforce Python 3.11+ and rebuild `venv` when needed
+- install dependencies + Playwright Chromium
+- validate config/session with `--doctor-lite`
+- install three `launchd` agents:
+- `com.rymag.ticket-monitor` (main monitor)
+- `com.rymag.ticket-monitor.guardian` (watchdog auto-fix)
+- `com.rymag.ticket-monitor.reloader` (local code-change restart)
+- install Desktop one-click shortcuts:
+- `Ticket Monitor Status.command`
+- `Ticket Monitor Verify.command`
+- `Ticket Monitor Fix.command`
+- `Ticket Monitor Restart.command`
+- `Ticket Monitor Reauth.command`
+- `Ticket Monitor Logs.command`
 
-## Dependencies
+### Prevent Sleep Interruptions
 
-- **requests** — HTTP client for API calls and Discord webhooks
-- **pyyaml** — YAML config file parsing
-- **python-dateutil** — Timezone handling for polling schedule
+Run once on your Mac:
 
-All are standard, well-maintained Python packages. No Selenium, Playwright, or browser automation required.
+```bash
+sudo pmset -a sleep 0 disksleep 0 displaysleep 10
+sudo pmset -a tcpkeepalive 1 powernap 0
+```
 
-## Limitations
+Check current settings:
 
-- The Discovery API provides event-level status and price ranges, not individual ticket listings (sections, seat numbers, per-ticket prices). When you get a ping, you'll need to check Ticketmaster yourself to see what's available.
-- **Face Value Exchange** listings may appear and disappear quickly. The 30-second polling interval means there could be a brief window where tickets are posted and sold before the next check.
-- The **page checker** (Tier 3) may be blocked by Ticketmaster's anti-bot/anti-scraping systems and is disabled by default.
+```bash
+pmset -g
+```
+
+### launchd Commands
+
+```bash
+launchctl list | rg ticket-monitor
+launchctl kickstart -k gui/$(id -u)/com.rymag.ticket-monitor
+launchctl kickstart -k gui/$(id -u)/com.rymag.ticket-monitor.guardian
+launchctl kickstart -k gui/$(id -u)/com.rymag.ticket-monitor.reloader
+```
+
+### Mac Logs
+
+```bash
+tail -f logs/launchd.out.log
+tail -f logs/launchd.err.log
+tail -f logs/guardian.log
+tail -f logs/reloader.log
+```
+
+## Commands
+
+- `python3 monitor.py --test` basic config/session/Discord checks
+- `python3 monitor.py --test-ticket-alert` synthetic ticket alert (validates @mention path)
+- `python3 monitor.py --test-ticket-alert-matrix` send 3 synthetic ticket alerts (LOGE bingo, budget bingo, non-bingo)
+- `python3 monitor.py --doctor` full health check (session + probe + Discord)
+- `python3 monitor.py --doctor-lite` quick local health check (no Discord webhook check)
+- `python3 monitor.py --health-json` machine-readable monitor health snapshot
+- `python3 monitor.py --bootstrap-session` one-time manual Ticketmaster login
+- `python3 monitor.py --restart-browser` request browser recycle without full process restart
+- `python3 monitor.py --version` runtime/build info
+- `python3 monitor.py --once` run one cycle and exit
+- `python3 monitor.py --verbose` enable debug logs
+
+Control shortcuts:
+
+- `scripts/monitorctl.sh status`
+- `scripts/monitorctl.sh verify` one-command service + health + auto-heal verification
+- `scripts/monitorctl.sh verify-webhook` verify + run full doctor + send 3 sample ticket alerts
+- `scripts/monitorctl.sh fix`
+- `scripts/monitorctl.sh restart`
+- `scripts/monitorctl.sh doctor`
+- `scripts/monitorctl.sh reauth` interactive one-command re-login flow
+- `scripts/monitorctl.sh logs`
+
+Refresh Desktop shortcuts anytime:
+
+```bash
+scripts/install_desktop_shortcuts.sh
+```
+
+## Config Highlights
+
+See `config.example.yaml`. New key sections:
+
+- `browser.storage_state_path`
+- `browser.session_mode` (`storage_state`, `persistent_profile`, or `cdp_attach`)
+- `browser.user_data_dir` (dedicated profile path for persistent mode)
+- `browser.channel` (default `chrome`)
+- `browser.cdp_endpoint_url` / `browser.cdp_connect_timeout_seconds`
+- `browser.reuse_event_tabs`
+- `browser.poll_min_seconds` / `browser.poll_max_seconds`
+- `browser.poll_interval_seconds` / `browser.poll_jitter_seconds` (legacy fallback)
+- `browser.challenge_threshold`
+- `browser.challenge_retry_seconds`
+- `browser_host.*` (dedicated Chrome host process configuration)
+- `alerts.ticket_cooldown_seconds`
+- `alerts.operational_heartbeat_hours`
+- `alerts.event_check_stale_seconds` (alert if any configured event stops getting checks)
+- `alerts.operational_state_cooldown_seconds` (dedupe repeated outage/auth incidents)
+- `self_heal.*`
+- `auth.*` (optional Keychain-backed session auto re-login)
+- `watchdog.*`
+- `updates.*`
+
+## Recommended: Google Chrome CDP Mode
+
+For best re-auth durability on macOS, use a dedicated real Chrome host process and attach via CDP:
+
+```yaml
+browser:
+  session_mode: "cdp_attach"
+  cdp_endpoint_url: "http://127.0.0.1:9222"
+  poll_min_seconds: 45
+  poll_max_seconds: 60
+
+browser_host:
+  enabled: true
+  chrome_executable_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  user_data_dir: "secrets/tm_chrome_profile"
+  remote_debugging_port: 9222
+
+auth:
+  auto_login_enabled: false
+```
+
+Notes:
+- Keep profile dedicated to this monitor (do not reuse your daily browsing profile).
+- First run `scripts/monitorctl.sh reauth` to initialize/login once in the same dedicated profile.
+- CAPTCHA/anti-bot pages may still require manual intervention.
+- `scripts/monitorctl.sh verify` now fails fast with explicit CDP host reasons (`browser_host_running=false`, `cdp_connected=false`) instead of looping browser restarts.
+
+Manual reauth runbook in CDP mode:
+
+1. `scripts/browser_host.sh status --config config.yaml`
+2. `scripts/monitorctl.sh reauth`
+3. `scripts/monitorctl.sh verify`
+
+## Optional: Auto Re-Login (macOS Keychain)
+
+If your Ticketmaster session expires while you're away, you can enable unattended re-login auto-fix.
+
+1. Save Ticketmaster email in Keychain:
+
+```bash
+security add-generic-password -U -s "tame-impala-ticket-monitor" -a "ticketmaster-email" -w "YOUR_EMAIL"
+```
+
+2. Save Ticketmaster password in Keychain:
+
+```bash
+security add-generic-password -U -s "tame-impala-ticket-monitor" -a "ticketmaster-password" -w "YOUR_PASSWORD"
+```
+
+3. Enable in `config.yaml`:
+
+```yaml
+auth:
+  auto_login_enabled: true
+  keychain_service: "tame-impala-ticket-monitor"
+  keychain_email_account: "ticketmaster-email"
+  keychain_password_account: "ticketmaster-password"
+  max_auto_login_attempts_per_hour: 3
+  auto_login_cooldown_seconds: 1800
+```
+
+4. Validate setup:
+
+```bash
+python3 monitor.py --doctor-lite --config config.yaml
+python3 monitor.py --doctor --config config.yaml
+```
+
+## Operational Model
+
+- Normal loop: every 45-60s (recommended) with randomized cadence.
+- Event checks are staggered by 6s by default.
+- Per-event staleness guard alerts if one configured event stops being checked.
+- Blocked/challenge/blind checks are tracked per event.
+- At threshold breach, monitor enters outage state and retries at 60s until recovery.
+- Repeated browser failures trigger staged self-healing:
+- browser context recycle first
+- process restart request if browser keeps failing
+- external guardian watchdog handles stale/non-running process recovery
+- local code/config updates trigger automatic safe restart after `--doctor-lite` preflight
+
+## If Away From Mac
+
+- Keep Mac power settings from the setup section to avoid sleep interruptions.
+- Guardian will automatically kickstart the monitor when health goes stale.
+- Reloader will auto-restart monitor on local code/config changes.
+- If `auth.auto_login_enabled: true` and Keychain credentials are configured, monitor will attempt bounded unattended re-login.
+- If CAPTCHA/anti-bot challenge appears, auto-login will back off and alert; manual recovery is still:
+- run `scripts/monitorctl.sh reauth`
+
+## Testing
+
+```bash
+python3 -m pytest -q
+```
+
+The suite includes tests for:
+
+- Browser probe available/blocked/challenge behavior
+- Detector dedupe + cooldown logic
+- Scheduler outage/recovery/backoff behavior
+- State migration compatibility

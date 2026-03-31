@@ -1,444 +1,635 @@
-"""Tests for the monitoring scheduler — check cycles, price range detection, and API call persistence."""
+"""Tests for browser-first monitor scheduler behavior."""
 
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, call, patch
+from __future__ import annotations
 
-from src.config import MonitorConfig, EventConfig
-from src.models import EventStatus, EventStatusCode, PageData, PriceRange
-from src.scheduler import MonitorScheduler
-from src.ticketmaster import NetworkError, RateLimitError, APIError
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+from src.browser_probe import BrowserProbeError
+from src.config import EventConfig, MonitorConfig
+from src.models import ProbeResult, ProbeSignalType
+from src.session_autofix import AutoReauthResult
+from src.scheduler import PROCESS_RESTART_EXIT_CODE, MonitorScheduler
+from src.state import MonitorState
 
 
 def _make_config(**overrides) -> MonitorConfig:
     defaults = dict(
-        api_key="test", discord_webhook_url="http://test", discord_username="Test",
+        discord_webhook_url="https://discord.test/webhook",
+        discord_username="Test",
         discord_ping_user_id="",
-        events=[],
-        daytime_interval_seconds=30, overnight_interval_seconds=300,
-        daytime_start_hour=8, daytime_end_hour=1, backoff_multiplier=1.5,
-        max_backoff_seconds=600, timezone="US/Eastern",
-        notify_on_status_change=True, daily_heartbeat_hour=9, daily_recap_hour=23,
-        enable_page_check=False, page_check_interval_multiplier=5,
-        log_level="INFO", log_file="logs/test.log", log_max_file_size_mb=10,
+        events=[EventConfig(event_id="event-1", name="Night 1", date="2026-07-28", url="http://event")],
+        browser_storage_state_path="secrets/test_state.json",
+        browser_session_mode="storage_state",
+        browser_user_data_dir="secrets/test_profile",
+        browser_channel="chrome",
+        browser_cdp_endpoint_url="http://127.0.0.1:9222",
+        browser_cdp_connect_timeout_seconds=10,
+        browser_reuse_event_tabs=True,
+        browser_poll_min_seconds=45,
+        browser_poll_max_seconds=60,
+        browser_headless=True,
+        browser_poll_interval_seconds=12,
+        browser_poll_jitter_seconds=2,
+        browser_navigation_timeout_seconds=20,
+        browser_challenge_threshold=5,
+        browser_challenge_retry_seconds=60,
+        event_stagger_seconds=6,
+        browser_host_enabled=False,
+        browser_host_chrome_executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        browser_host_user_data_dir="secrets/tm_chrome_profile",
+        browser_host_remote_debugging_port=9222,
+        alerts_ticket_cooldown_seconds=180,
+        alerts_operational_heartbeat_hours=6,
+        alerts_event_check_stale_seconds=180,
+        alerts_operational_state_cooldown_seconds=1800,
+        backoff_multiplier=2.0,
+        max_backoff_seconds=120,
+        self_heal_browser_restart_threshold=3,
+        self_heal_browser_restart_window_seconds=600,
+        self_heal_process_restart_threshold=6,
+        self_heal_process_restart_window_seconds=1800,
+        self_heal_error_alert_cooldown_seconds=1800,
+        auth_auto_login_enabled=False,
+        auth_keychain_service="tame-impala-ticket-monitor",
+        auth_keychain_email_account="ticketmaster-email",
+        auth_keychain_password_account="ticketmaster-password",
+        auth_max_auto_login_attempts_per_hour=3,
+        auth_auto_login_cooldown_seconds=1800,
+        auth_session_health_check_interval_seconds=3600,
+        auth_session_health_check_url="https://www.ticketmaster.com/my-account",
+        watchdog_enabled=True,
+        watchdog_interval_seconds=120,
+        watchdog_stale_after_seconds=180,
+        watchdog_max_fix_attempts_per_hour=6,
+        updates_enabled=True,
+        updates_interval_seconds=60,
+        updates_stability_delay_seconds=20,
+        updates_watch_globs=[
+            "monitor.py",
+            "src/**/*.py",
+            "config.yaml",
+            "requirements.txt",
+            "pyproject.toml",
+        ],
+        timezone="US/Eastern",
+        log_level="INFO",
+        log_file="logs/test.log",
+        log_max_file_size_mb=10,
         log_backup_count=3,
     )
     defaults.update(overrides)
     return MonitorConfig(**defaults)
 
 
-def _make_scheduler(config=None) -> MonitorScheduler:
+def _make_result(
+    *,
+    available: bool,
+    blocked: bool = False,
+    challenge: bool = False,
+    signal_type: ProbeSignalType = ProbeSignalType.DOM,
+    dom_signals: list[str] | None = None,
+    availability_count: int = 0,
+    listing_groups: list[dict] | None = None,
+) -> ProbeResult:
+    return ProbeResult(
+        event_id="event-1",
+        event_url="http://event",
+        available=available,
+        blocked=blocked,
+        challenge_detected=challenge,
+        signal_type=signal_type,
+        signal_confidence=0.9,
+        price_summary="$99.00 - $129.00" if available else None,
+        section_summary="Section 101" if available else None,
+        raw_indicators={
+            "dom_signals": dom_signals or ["buy_ui"],
+            "network_signals": [],
+            "availability_count": availability_count,
+            "listing_groups": (
+                listing_groups
+                if listing_groups is not None
+                else ([{"section": "Section 101", "row": "1", "price": 99.0, "count": 1}] if available else [])
+            ),
+        },
+        listing_summary="Section 101 / Row 1 / $99.00 x1" if available else None,
+    )
+
+
+def _make_scheduler(tmp_path, config: MonitorConfig | None = None) -> MonitorScheduler:
     config = config or _make_config()
-    return MonitorScheduler(
+    state = MonitorState(state_file=str(tmp_path / "state.json"))
+    scheduler = MonitorScheduler(
         config=config,
-        client=MagicMock(),
         notifier=MagicMock(),
-        state=MagicMock(),
+        state=state,
         start_time=datetime.now(timezone.utc),
+        probe=MagicMock(),
     )
+    scheduler.probe.start = MagicMock(return_value=None)
+    return scheduler
 
 
-class TestPersistApiCalls:
-    def test_persist_adds_delta_to_state(self):
-        scheduler = _make_scheduler()
-        scheduler.client.get_daily_call_count.return_value = 4
-        scheduler._persist_api_calls()
-        scheduler.state.add_daily_api_calls.assert_called_once_with(4)
-
-    def test_persist_tracks_delta_across_cycles(self):
-        scheduler = _make_scheduler()
-        scheduler.client.get_daily_call_count.return_value = 4
-        scheduler._persist_api_calls()
-
-        scheduler.client.get_daily_call_count.return_value = 8
-        scheduler._persist_api_calls()
-        # Second call should only add the delta (8 - 4 = 4)
-        assert scheduler.state.add_daily_api_calls.call_args_list[-1].args == (4,)
-
-    def test_persist_skips_zero_delta(self):
-        scheduler = _make_scheduler()
-        scheduler.client.get_daily_call_count.return_value = 0
-        scheduler._persist_api_calls()
-        scheduler.state.add_daily_api_calls.assert_not_called()
-
-    def test_send_recap_uses_state_api_calls(self):
-        config = _make_config(events=[
-            EventConfig(event_id="e1", name="Night 1", date="2026-09-01",
-                        url="http://test"),
-        ])
-        scheduler = _make_scheduler(config)
-        scheduler.state.get_daily_activity.return_value = {}
-        scheduler.state.get_daily_api_calls.return_value = 120
-        scheduler.notifier.send_daily_recap.return_value = True
-
-        scheduler.send_recap()
-        # Verify it used the state count (120), not the client count
-        scheduler.notifier.send_daily_recap.assert_called_once()
-        _, kwargs = scheduler.notifier.send_daily_recap.call_args
-        assert kwargs["daily_calls"] == 120
-
-
-def _make_event_status(status_code=EventStatusCode.OFFSALE, price_ranges=None) -> EventStatus:
-    return EventStatus(
-        event_id="test-event",
-        status_code=status_code,
-        price_ranges=price_ranges or [],
-        event_url="https://ticketmaster.com/event/test",
-        raw_response={},
-    )
-
-
-def _make_event_cfg() -> EventConfig:
-    return EventConfig(
-        event_id="test-event",
-        name="Test Event",
-        date="2026-07-28",
-        url="https://ticketmaster.com/event/test",
-    )
-
-
-def _setup_state_mocks(scheduler, last_status=None, last_price_key=None):
-    """Wire up all the state mocks needed for _check_event."""
-    scheduler.state.get_last_status.return_value = last_status
-    scheduler.state.get_had_price_ranges.return_value = False
-    scheduler.state.get_last_price_key.return_value = last_price_key
-    scheduler.state.get_daily_activity.return_value = {}
-    scheduler.state.record_daily_activity.return_value = None
-    scheduler.state.set_last_check.return_value = None
-    scheduler.state.set_last_successful_check.return_value = None
-    scheduler.state.set_last_status.return_value = None
-    scheduler.state.set_had_price_ranges.return_value = None
-    scheduler.state.set_last_price_key.return_value = None
-    # Default: notifications succeed
-    scheduler.notifier.send_status_change.return_value = True
-    scheduler.notifier.send_sold_out_again.return_value = True
-    scheduler.notifier.send_price_range_appeared.return_value = True
-
-
-class TestStatusChangeDetection:
-    """Test status change and first-check notification logic."""
-
-    def _make_scheduler_for_check(self, last_status=None):
-        config = _make_config(events=[_make_event_cfg()])
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = False
-        scheduler.client.is_budget_warning.return_value = False
-        _setup_state_mocks(scheduler, last_status=last_status)
-        return scheduler
-
-    def test_status_change_triggers_notification(self):
-        """Normal case: offsale → onsale sends a status change notification."""
-        scheduler = self._make_scheduler_for_check(last_status="offsale")
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_status_change.assert_called_once()
-
-    def test_first_check_onsale_triggers_notification(self):
-        """If old_status is None and the event is onsale, notify — covers restarts with fresh state."""
-        scheduler = self._make_scheduler_for_check(last_status=None)
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_status_change.assert_called_once()
-
-    def test_first_check_offsale_no_notification(self):
-        """If old_status is None and the event is offsale, don't alert — nothing actionable."""
-        scheduler = self._make_scheduler_for_check(last_status=None)
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.OFFSALE)
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_status_change.assert_not_called()
-        scheduler.notifier.send_sold_out_again.assert_not_called()
-
-    def test_no_change_no_notification(self):
-        """If status hasn't changed, no notification is sent."""
-        scheduler = self._make_scheduler_for_check(last_status="offsale")
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.OFFSALE)
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_status_change.assert_not_called()
-        scheduler.notifier.send_sold_out_again.assert_not_called()
-
-
-class TestPriceRangeDetection:
-    """Test that price range VALUE changes trigger notifications."""
-
-    def _make_scheduler_for_check(self, last_price_key=None):
-        config = _make_config(events=[_make_event_cfg()])
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = False
-        scheduler.client.is_budget_warning.return_value = False
-        _setup_state_mocks(scheduler, last_status="offsale", last_price_key=last_price_key)
-        return scheduler
-
-    def test_price_range_change_triggers_notification(self):
-        """When price range values change, notify — catches FVE appearing alongside original prices."""
-        original_key = "standard:59.50-209.50"
-        scheduler = self._make_scheduler_for_check(last_price_key=original_key)
-        # New prices include FVE range
-        new_ranges = [
-            PriceRange(type="standard", currency="USD", min_price=59.50, max_price=209.50),
-            PriceRange(type="standard", currency="USD", min_price=419.60, max_price=419.60),
-        ]
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=new_ranges)
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_price_range_appeared.assert_called_once()
-
-    def test_price_range_no_notification_on_first_ever_check(self):
-        """If last_price_key is None (never been checked), don't alert — we don't know if this is new."""
-        scheduler = self._make_scheduler_for_check(last_price_key=None)
-        price_range = PriceRange(type="standard", currency="USD", min_price=50.0, max_price=150.0)
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[price_range])
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_price_range_appeared.assert_not_called()
-
-    def test_same_prices_no_notification(self):
-        """If prices haven't changed, don't re-alert."""
-        price_range = PriceRange(type="standard", currency="USD", min_price=50.0, max_price=150.0)
-        key = MonitorScheduler._price_range_key([price_range])
-        scheduler = self._make_scheduler_for_check(last_price_key=key)
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[price_range])
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_price_range_appeared.assert_not_called()
-
-    def test_price_range_no_notification_when_no_ranges(self):
-        """No alert when there are no price ranges even if key differs."""
-        scheduler = self._make_scheduler_for_check(last_price_key="standard:50.00-150.00")
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[])
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.notifier.send_price_range_appeared.assert_not_called()
-
-    def test_price_key_recorded_each_check(self):
-        """set_last_price_key is always called so state stays up to date."""
-        scheduler = self._make_scheduler_for_check(last_price_key=None)
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[])
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.state.set_last_price_key.assert_called_once_with("test-event", "")
-
-    def test_had_price_ranges_recorded_each_check(self):
-        """set_had_price_ranges is always called so state stays up to date."""
-        scheduler = self._make_scheduler_for_check(last_price_key=None)
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=[])
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.state.set_had_price_ranges.assert_called_once_with("test-event", False)
-
-
-class TestPriceRangeKey:
-    """Test the _price_range_key helper method."""
-
-    def test_empty_ranges(self):
-        assert MonitorScheduler._price_range_key([]) == ""
-
-    def test_single_range(self):
-        pr = PriceRange(type="standard", currency="USD", min_price=59.50, max_price=209.50)
-        assert MonitorScheduler._price_range_key([pr]) == "standard:59.50-209.50"
-
-    def test_multiple_ranges_sorted(self):
-        pr1 = PriceRange(type="standard", currency="USD", min_price=59.50, max_price=209.50)
-        pr2 = PriceRange(type="resale", currency="USD", min_price=419.60, max_price=419.60)
-        key = MonitorScheduler._price_range_key([pr2, pr1])
-        # Should be sorted alphabetically
-        assert key == "resale:419.60-419.60|standard:59.50-209.50"
-
-    def test_same_ranges_different_order_same_key(self):
-        pr1 = PriceRange(type="a", currency="USD", min_price=10.0, max_price=20.0)
-        pr2 = PriceRange(type="b", currency="USD", min_price=30.0, max_price=40.0)
-        assert MonitorScheduler._price_range_key([pr1, pr2]) == MonitorScheduler._price_range_key([pr2, pr1])
-
-
-class TestNotificationFailureRetry:
-    """Test that failed Discord notifications don't update state (so we retry next cycle)."""
-
-    def _make_scheduler_for_check(self, last_status=None, last_price_key=None):
-        config = _make_config(events=[_make_event_cfg()])
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = False
-        scheduler.client.is_budget_warning.return_value = False
-        _setup_state_mocks(scheduler, last_status=last_status, last_price_key=last_price_key)
-        return scheduler
-
-    def test_failed_status_notification_does_not_update_state(self):
-        """If send_status_change fails, set_last_status must NOT be called."""
-        scheduler = self._make_scheduler_for_check(last_status="offsale")
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
-        scheduler.notifier.send_status_change.return_value = False  # Notification fails
-
-        scheduler._check_event(_make_event_cfg())
-
-        # State should NOT be updated — we want to retry next cycle
-        scheduler.state.set_last_status.assert_not_called()
-
-    def test_successful_status_notification_updates_state(self):
-        """If send_status_change succeeds, set_last_status IS called."""
-        scheduler = self._make_scheduler_for_check(last_status="offsale")
-        scheduler.client.get_event_status.return_value = _make_event_status(EventStatusCode.ONSALE)
-        scheduler.notifier.send_status_change.return_value = True
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.state.set_last_status.assert_called_once_with("test-event", "onsale")
-
-    def test_failed_price_notification_does_not_update_price_key(self):
-        """If send_price_range_appeared fails, set_last_price_key must NOT be called."""
-        original_key = "standard:59.50-209.50"
-        scheduler = self._make_scheduler_for_check(last_status="offsale", last_price_key=original_key)
-        new_ranges = [
-            PriceRange(type="standard", currency="USD", min_price=59.50, max_price=209.50),
-            PriceRange(type="standard", currency="USD", min_price=419.60, max_price=419.60),
-        ]
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=new_ranges)
-        scheduler.notifier.send_price_range_appeared.return_value = False  # Notification fails
-
-        scheduler._check_event(_make_event_cfg())
-
-        # Price key should NOT be updated — we want to retry next cycle
-        scheduler.state.set_last_price_key.assert_not_called()
-
-    def test_successful_price_notification_updates_price_key(self):
-        """If send_price_range_appeared succeeds, set_last_price_key IS called."""
-        original_key = "standard:59.50-209.50"
-        scheduler = self._make_scheduler_for_check(last_status="offsale", last_price_key=original_key)
-        new_ranges = [
-            PriceRange(type="standard", currency="USD", min_price=59.50, max_price=209.50),
-            PriceRange(type="standard", currency="USD", min_price=419.60, max_price=419.60),
-        ]
-        scheduler.client.get_event_status.return_value = _make_event_status(price_ranges=new_ranges)
-        scheduler.notifier.send_price_range_appeared.return_value = True
-
-        scheduler._check_event(_make_event_cfg())
-
-        scheduler.state.set_last_price_key.assert_called_once()
-
-
-class TestErrorRecovery:
-    """Test main loop error handling and Discord alerts for unexpected errors."""
-
-    def _make_looping_scheduler(self):
-        """Scheduler wired to run one iteration then stop."""
-        config = _make_config(events=[_make_event_cfg()])
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = False
-        scheduler.client.is_budget_warning.return_value = False
-        scheduler.client.get_daily_call_count.return_value = 0
-        scheduler.state.get_last_heartbeat_date.return_value = "2099-01-01"
-        scheduler.state.get_last_recap_date.return_value = "2099-01-01"
-        return scheduler
-
-    def test_unexpected_exception_sends_discord_alert(self):
-        """When an unexpected exception escapes the cycle, send_error is called."""
-        scheduler = self._make_looping_scheduler()
-        scheduler.client.get_event_status.side_effect = [RuntimeError("boom"), None]
-
-        # Stop after first error so we don't loop forever
-        call_count = 0
-        original_sleep = scheduler._interruptible_sleep
-        def stop_after_first(seconds):
-            scheduler.stop()
-        scheduler._interruptible_sleep = stop_after_first
-
-        scheduler.run()
-
-        scheduler.notifier.send_error.assert_called_once()
-        error_msg = scheduler.notifier.send_error.call_args[0][0]
-        assert "RuntimeError" in error_msg
-        assert "boom" in error_msg
-
-    def test_network_recovery_sends_discord_alert(self):
-        """When network recovers after being down, send_error is called with recovery message."""
-        scheduler = self._make_looping_scheduler()
-        # First call raises NetworkError (sets _network_down), second succeeds
-        scheduler.client.get_event_status.side_effect = [
-            NetworkError("connection refused"),
-            _make_event_status(),
-        ]
-        scheduler.state.get_last_status.return_value = "offsale"
-        scheduler.state.get_had_price_ranges.return_value = None
-        scheduler.state.get_last_price_key.return_value = None
-
-        call_count = 0
-        def stop_after_two(seconds):
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                scheduler.stop()
-        scheduler._interruptible_sleep = stop_after_two
-
-        scheduler.run()
-
-        # send_error should have been called for the network recovery
-        recovery_calls = [
-            c for c in scheduler.notifier.send_error.call_args_list
-            if "recovered" in c[0][0].lower()
-        ]
-        assert len(recovery_calls) == 1
-
-    def test_budget_exhausted_skips_cycle(self):
-        """When the API budget is exhausted, no event checks are made."""
-        config = _make_config(events=[_make_event_cfg()])
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = True
-        scheduler.state.get_last_heartbeat_date.return_value = "2099-01-01"
-        scheduler.state.get_last_recap_date.return_value = "2099-01-01"
-
-        scheduler._run_cycle()
-
-        scheduler.client.get_event_status.assert_not_called()
-
-
-class TestPageCheckerResetLogic:
-    """Verify that a None page_data (blocked request) does not reset the resale flag."""
-
-    def _make_scheduler_for_page_check(self):
-        config = _make_config(events=[_make_event_cfg()], enable_page_check=True,
-                              page_check_interval_multiplier=1)
-        scheduler = _make_scheduler(config)
-        scheduler.client.is_budget_exhausted.return_value = False
-        scheduler.client.is_budget_warning.return_value = False
-        _setup_state_mocks(scheduler, last_status="offsale", last_price_key=None)
-        scheduler.state.get_had_price_ranges.return_value = None
-        scheduler.state.get_had_page_resale.return_value = True
-        return scheduler
-
-    def test_none_page_data_does_not_reset_resale_flag(self):
-        """A blocked/errored page fetch (None) must not clear had_page_resale."""
-        scheduler = self._make_scheduler_for_page_check()
-        scheduler.client.get_event_status.return_value = _make_event_status()
-        scheduler._page_checker = MagicMock()
-        scheduler._page_checker.check_page.return_value = None  # blocked
-
-        scheduler._check_event(_make_event_cfg())
-
-        # set_had_page_resale must NOT have been called with False
-        for call_args in scheduler.state.set_had_page_resale.call_args_list:
-            assert call_args[0][1] is not False, \
-                "had_page_resale was reset to False on a blocked (None) page response"
-
-    def test_false_resale_detected_does_reset_flag(self):
-        """A successful page fetch with resale_detected=False should reset the flag."""
-        scheduler = self._make_scheduler_for_page_check()
-        scheduler.client.get_event_status.return_value = _make_event_status()
-        scheduler._page_checker = MagicMock()
-        scheduler._page_checker.check_page.return_value = PageData(
-            sections_available=[], price_info=None, resale_detected=False, raw_snippet=""
+class TestTicketAlerting:
+    def test_available_result_triggers_ticket_alert(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+
+        scheduler._handle_probe_result(event, _make_result(available=True))
+
+        scheduler.notifier.send_ticket_available.assert_called_once()
+        assert scheduler.state.get_last_alert_at(event.event_id) is not None
+        assert scheduler.state.get_last_availability_signature(event.event_id) != ""
+
+    def test_listing_groups_forwarded_to_notifier(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        listing_groups = [{"section": "LOGE20", "row": "14", "price": 200.1, "count": 4}]
+        result = _make_result(available=True, listing_groups=listing_groups)
+
+        scheduler._handle_probe_result(event, result)
+
+        kwargs = scheduler.notifier.send_ticket_available.call_args.kwargs
+        assert kwargs.get("listing_groups") == listing_groups
+
+    def test_duplicate_signature_is_deduped(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+
+        scheduler._handle_probe_result(event, result)
+        scheduler._handle_probe_result(event, result)
+
+        assert scheduler.notifier.send_ticket_available.call_count == 1
+
+    def test_cooldown_elapsed_realerts_same_signature(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+
+        scheduler._handle_probe_result(event, result)
+        old_time = datetime.now(timezone.utc) - timedelta(seconds=200)
+        scheduler.state.set_last_alert_at(event.event_id, old_time)
+        scheduler._handle_probe_result(event, result)
+
+        assert scheduler.notifier.send_ticket_available.call_count == 2
+
+
+class TestMentionBurst:
+    def test_burst_sends_mentions_every_45s_for_up_to_7(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        for step in range(7):
+            scheduler._handle_probe_result(
+                event,
+                result,
+                now=base + timedelta(seconds=45 * step),
+            )
+
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=315))
+
+        assert scheduler.notifier.send_ticket_available.call_count == 7
+        assert scheduler.state.get_mention_burst_sent_count(event.event_id) == 7
+        assert scheduler.state.get_mention_burst_completed_for_episode(event.event_id) is True
+
+        mentions = [call.kwargs.get("mention") for call in scheduler.notifier.send_ticket_available.call_args_list]
+        assert mentions == [True, True, True, True, True, True, True]
+
+    def test_after_burst_window_detector_alerts_continue_without_mention(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, result, now=base)
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=360))
+
+        assert scheduler.notifier.send_ticket_available.call_count == 2
+        assert scheduler.notifier.send_ticket_available.call_args_list[-1].kwargs.get("mention") is False
+
+    def test_burst_reminder_sends_when_detector_dedupes(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        listing_groups = [{"section": "BALCONY301", "row": "6", "price": 120.0, "count": 3}]
+        result = _make_result(available=True, listing_groups=listing_groups)
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, result, now=base)
+        scheduler._handle_probe_result(event, result, now=base + timedelta(seconds=45))
+
+        assert scheduler.notifier.send_ticket_available.call_count == 2
+        second_kwargs = scheduler.notifier.send_ticket_available.call_args_list[-1].kwargs
+        assert second_kwargs.get("reason") == "attention_burst"
+        assert second_kwargs.get("listing_groups") == listing_groups
+        assert scheduler.state.get_last_alert_at(event.event_id) == base
+
+    def test_unavailable_resets_burst_and_rearms_mentions(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        available = _make_result(available=True)
+        unavailable = _make_result(
+            available=False,
+            signal_type=ProbeSignalType.DOM,
+            dom_signals=["sold_out_text"],
+        )
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(event, available, now=base)
+        scheduler._handle_probe_result(event, unavailable, now=base + timedelta(seconds=30))
+        scheduler._handle_probe_result(event, available, now=base + timedelta(seconds=60))
+
+        assert scheduler.notifier.send_ticket_available.call_count == 2
+        first_call = scheduler.notifier.send_ticket_available.call_args_list[0].kwargs
+        second_call = scheduler.notifier.send_ticket_available.call_args_list[1].kwargs
+        assert first_call.get("mention") is True
+        assert second_call.get("mention") is True
+
+    def test_hard_failsafe_marks_burst_complete(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        scheduler.state.set_mention_burst_started_at(event.event_id, base)
+        should_send = scheduler._should_send_mention_burst(event.event_id, base + timedelta(seconds=901))
+
+        assert should_send is False
+        assert scheduler.state.get_mention_burst_completed_for_episode(event.event_id) is True
+
+    def test_stale_burst_state_is_reset_and_rearmed(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        event = scheduler.config.events[0]
+        result = _make_result(available=True)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        stale_started = now - timedelta(seconds=901)
+
+        scheduler.state.set_mention_burst_started_at(event.event_id, stale_started)
+        scheduler.state.set_mention_burst_last_mention_at(event.event_id, stale_started)
+        scheduler.state.set_mention_burst_sent_count(event.event_id, 4)
+        scheduler.state.set_mention_burst_completed_for_episode(event.event_id, False)
+
+        scheduler._handle_probe_result(event, result, now=now)
+
+        assert scheduler.notifier.send_ticket_available.call_count == 1
+        assert scheduler.notifier.send_ticket_available.call_args.kwargs.get("mention") is True
+        assert scheduler.state.get_mention_burst_sent_count(event.event_id) == 1
+        assert scheduler.state.get_mention_burst_started_at(event.event_id) == now
+
+
+class TestOutageTracking:
+    def test_threshold_triggers_blocked_alert(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(browser_challenge_threshold=3))
+        event = scheduler.config.events[0]
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
         )
 
-        scheduler._check_event(_make_event_cfg())
+        scheduler._handle_probe_result(event, blocked)
+        scheduler._handle_probe_result(event, blocked)
+        scheduler._handle_probe_result(event, blocked)
 
-        scheduler.state.set_had_page_resale.assert_called_with("test-event", False)
+        scheduler.notifier.send_monitor_blocked.assert_called_once()
+        blocked_call = scheduler.notifier.send_monitor_blocked.call_args
+        assert blocked_call.args[0] == event.name
+        assert blocked_call.kwargs.get("auto_fix_planned") == "browser_recycle_now"
+        assert blocked_call.kwargs.get("manual_required") is False
+        assert blocked_call.kwargs.get("context", {}).get("event_id") == event.event_id
+        assert scheduler.state.get_in_outage_state(event.event_id) is True
+
+    def test_threshold_triggers_browser_recycle(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(browser_challenge_threshold=2))
+        event = scheduler.config.events[0]
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+
+        scheduler._handle_probe_result(event, blocked)
+        scheduler._handle_probe_result(event, blocked)
+
+        assert scheduler.probe.close.call_count >= 1
+        assert scheduler.probe.start.call_count >= 1
+        assert scheduler.state.get_browser_restart_count_24h() >= 1
+
+    def test_recovery_alert_fires_once(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path, _make_config(browser_challenge_threshold=2))
+        event = scheduler.config.events[0]
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        healthy = _make_result(
+            available=False,
+            blocked=False,
+            challenge=False,
+            signal_type=ProbeSignalType.DOM,
+            dom_signals=["sold_out_text"],
+        )
+
+        scheduler._handle_probe_result(event, blocked)
+        scheduler._handle_probe_result(event, blocked)  # enters outage
+        scheduler._handle_probe_result(event, healthy)  # recovers
+
+        scheduler.notifier.send_monitor_recovered.assert_called_once()
+        assert scheduler.state.get_in_outage_state(event.event_id) is False
+        assert scheduler.state.get_consecutive_blocked(event.event_id) == 0
+
+
+class TestAutoReauth:
+    def test_cdp_attach_mode_skips_scripted_auto_reauth(self, tmp_path):
+        config = _make_config(
+            browser_session_mode="cdp_attach",
+            auth_auto_login_enabled=True,
+        )
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        probe = MagicMock()
+        probe.start = MagicMock(return_value=None)
+        session_autofixer = MagicMock(
+            attempt_reauth=MagicMock(return_value=AutoReauthResult(success=True, reason="session_refreshed"))
+        )
+        scheduler = MonitorScheduler(
+            config=config,
+            notifier=MagicMock(),
+            state=state,
+            start_time=datetime.now(timezone.utc),
+            probe=probe,
+            session_autofixer=session_autofixer,
+        )
+
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        blocked.raw_indicators["response_status"] = 401
+
+        scheduler._handle_probe_result(config.events[0], blocked)
+
+        session_autofixer.attempt_reauth.assert_not_called()
+
+    def test_auth_like_outage_triggers_auto_reauth_success(self, tmp_path):
+        config = _make_config(
+            browser_challenge_threshold=1,
+            auth_auto_login_enabled=True,
+            auth_max_auto_login_attempts_per_hour=3,
+        )
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        probe = MagicMock()
+        probe.start = MagicMock(return_value=None)
+        scheduler = MonitorScheduler(
+            config=config,
+            notifier=MagicMock(),
+            state=state,
+            start_time=datetime.now(timezone.utc),
+            probe=probe,
+            session_autofixer=MagicMock(
+                attempt_reauth=MagicMock(return_value=AutoReauthResult(success=True, reason="session_refreshed"))
+            ),
+        )
+
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        blocked.raw_indicators["response_status"] = 401
+
+        scheduler._handle_probe_result(config.events[0], blocked)
+
+        scheduler.session_autofixer.attempt_reauth.assert_called_once()
+        assert scheduler.probe.close.call_count >= 1
+        assert scheduler.probe.start.call_count >= 1
+        actions = [call.kwargs.get("action") for call in scheduler.notifier.send_auto_fix_action.call_args_list]
+        assert "ticketmaster_reauth_success" in actions
+
+    def test_auto_reauth_failures_trigger_cooldown(self, tmp_path):
+        config = _make_config(
+            browser_challenge_threshold=1,
+            auth_auto_login_enabled=True,
+            auth_max_auto_login_attempts_per_hour=2,
+            auth_auto_login_cooldown_seconds=600,
+        )
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        probe = MagicMock()
+        probe.start = MagicMock(return_value=None)
+        scheduler = MonitorScheduler(
+            config=config,
+            notifier=MagicMock(),
+            state=state,
+            start_time=datetime.now(timezone.utc),
+            probe=probe,
+            session_autofixer=MagicMock(
+                attempt_reauth=MagicMock(return_value=AutoReauthResult(success=False, reason="auth_required_status"))
+            ),
+        )
+
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        blocked.raw_indicators["response_status"] = 403
+        base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler._handle_probe_result(config.events[0], blocked, now=base)
+        scheduler._handle_probe_result(config.events[0], blocked, now=base + timedelta(seconds=5))
+        scheduler._handle_probe_result(config.events[0], blocked, now=base + timedelta(seconds=10))
+
+        assert scheduler.session_autofixer.attempt_reauth.call_count == 2
+        assert scheduler.state.get_auth_pause_until() is not None
+        assert scheduler.notifier.send_critical_attention.call_count >= 1
+        critical_kwargs = scheduler.notifier.send_critical_attention.call_args.kwargs
+        assert "next_steps" in critical_kwargs
+        assert "scripts/monitorctl.sh reauth" in critical_kwargs["next_steps"]
+
+    def test_challenge_detected_failure_sends_manual_attention(self, tmp_path):
+        config = _make_config(
+            browser_challenge_threshold=1,
+            auth_auto_login_enabled=True,
+            auth_max_auto_login_attempts_per_hour=3,
+        )
+        state = MonitorState(state_file=str(tmp_path / "state.json"))
+        probe = MagicMock()
+        probe.start = MagicMock(return_value=None)
+        scheduler = MonitorScheduler(
+            config=config,
+            notifier=MagicMock(),
+            state=state,
+            start_time=datetime.now(timezone.utc),
+            probe=probe,
+            session_autofixer=MagicMock(
+                attempt_reauth=MagicMock(return_value=AutoReauthResult(success=False, reason="challenge_detected"))
+            ),
+        )
+
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            challenge=False,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        blocked.raw_indicators["response_status"] = 401
+
+        scheduler._handle_probe_result(config.events[0], blocked)
+
+        assert scheduler.notifier.send_critical_attention.call_count >= 1
+        critical_kwargs = scheduler.notifier.send_critical_attention.call_args.kwargs
+        assert "next_steps" in critical_kwargs
+        assert "scripts/monitorctl.sh reauth" in critical_kwargs["next_steps"]
+
+
+class TestCycleBehavior:
+    def test_run_cycle_returns_slow_retry_on_blocked_event(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        blocked = _make_result(
+            available=False,
+            blocked=True,
+            signal_type=ProbeSignalType.NONE,
+            dom_signals=[],
+        )
+        scheduler.probe.check_event.return_value = blocked
+
+        needs_slow_retry = scheduler._run_cycle()
+
+        assert needs_slow_retry is True
+
+    def test_run_cycle_continues_to_next_event_after_probe_error(self, tmp_path):
+        config = _make_config(
+            events=[
+                EventConfig(event_id="event-1", name="Night 1", date="2026-07-28", url="http://event-1"),
+                EventConfig(event_id="event-2", name="Night 2", date="2026-07-29", url="http://event-2"),
+            ],
+        )
+        scheduler = _make_scheduler(tmp_path, config=config)
+        healthy = _make_result(available=False, signal_type=ProbeSignalType.DOM, dom_signals=["sold_out_text"])
+
+        def _check_event(event_id: str, _url: str):
+            if event_id == "event-1":
+                raise BrowserProbeError("simulated per-event failure")
+            return healthy
+
+        scheduler.probe.check_event.side_effect = _check_event
+
+        needs_slow_retry = scheduler._run_cycle()
+
+        assert needs_slow_retry is True
+        assert scheduler.probe.check_event.call_count == 2
+        assert scheduler.state.get_last_check("event-1") is None
+        assert scheduler.state.get_last_check("event-2") is not None
+
+    def test_poll_staleness_alerts_and_recovers(self, tmp_path):
+        config = _make_config(
+            alerts_event_check_stale_seconds=30,
+            events=[
+                EventConfig(event_id="event-1", name="Night 1", date="2026-07-28", url="http://event-1"),
+                EventConfig(event_id="event-2", name="Night 2", date="2026-07-29", url="http://event-2"),
+            ],
+        )
+        scheduler = _make_scheduler(tmp_path, config=config)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        scheduler.state._event("event-1")["last_check"] = (now - timedelta(seconds=90)).isoformat()
+        scheduler.state._event("event-2")["last_check"] = (now - timedelta(seconds=10)).isoformat()
+
+        stale = scheduler._check_event_poll_staleness(now=now)
+
+        assert stale is True
+        scheduler.notifier.send_critical_attention.assert_called_once()
+        assert scheduler.probe.close.call_count >= 1
+        assert scheduler.probe.start.call_count >= 1
+
+        scheduler.state._event("event-1")["last_check"] = (now - timedelta(seconds=5)).isoformat()
+        stale_after_recovery = scheduler._check_event_poll_staleness(now=now + timedelta(seconds=1))
+
+        assert stale_after_recovery is False
+        assert "event-1" not in scheduler._stale_event_alerted
+        assert scheduler.notifier.send_critical_attention.call_count == 1
+
+    def test_runtime_backoff_grows_and_caps(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+        scheduler._consecutive_runtime_errors = 1
+        assert scheduler._runtime_error_backoff() == 10.0
+        scheduler._consecutive_runtime_errors = 2
+        assert scheduler._runtime_error_backoff() == 20.0
+        scheduler._consecutive_runtime_errors = 3
+        assert scheduler._runtime_error_backoff() == 40.0
+        scheduler._consecutive_runtime_errors = 10
+        assert scheduler._runtime_error_backoff() == 120.0
+
+
+class TestSelfHealing:
+    def test_error_classification_prefers_wrapped_exception_type(self, tmp_path):
+        scheduler = _make_scheduler(tmp_path)
+
+        class TimeoutError(Exception):
+            pass
+
+        class Error(Exception):
+            pass
+
+        try:
+            try:
+                raise TimeoutError("navigation timeout")
+            except TimeoutError as timeout_exc:
+                raise BrowserProbeError("wrapped timeout") from timeout_exc
+        except BrowserProbeError as wrapped_timeout:
+            assert scheduler._classify_browser_probe_error(wrapped_timeout) == "timeout"
+
+        try:
+            try:
+                raise Error("Target page, context or browser has been closed")
+            except Error as closed_exc:
+                raise BrowserProbeError("wrapped closed") from closed_exc
+        except BrowserProbeError as wrapped_closed:
+            assert scheduler._classify_browser_probe_error(wrapped_closed) == "crash"
+
+    def test_browser_errors_trigger_recycle(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                self_heal_browser_restart_threshold=2,
+                self_heal_process_restart_threshold=10,
+            ),
+        )
+
+        scheduler._handle_browser_probe_error(BrowserProbeError("Page.goto timeout 20000ms"))
+        scheduler._handle_browser_probe_error(BrowserProbeError("Page.goto timeout 20000ms"))
+
+        assert scheduler.probe.close.call_count >= 1
+        assert scheduler.probe.start.call_count >= 1
+        assert scheduler.state.get_browser_restart_count_24h() >= 1
+
+    def test_process_restart_threshold_exits(self, tmp_path):
+        scheduler = _make_scheduler(
+            tmp_path,
+            _make_config(
+                self_heal_browser_restart_threshold=10,
+                self_heal_process_restart_threshold=3,
+            ),
+        )
+
+        scheduler._handle_browser_probe_error(BrowserProbeError("timeout #1"))
+        scheduler._handle_browser_probe_error(BrowserProbeError("timeout #2"))
+        try:
+            scheduler._handle_browser_probe_error(BrowserProbeError("timeout #3"))
+            assert False, "Expected SystemExit for process restart threshold"
+        except SystemExit as exc:
+            assert exc.code == PROCESS_RESTART_EXIT_CODE

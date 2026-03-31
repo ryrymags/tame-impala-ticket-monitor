@@ -1,35 +1,12 @@
 # =============================================================================
-# Tame Impala Face Value Exchange Monitor — Configuration
+# Tame Impala Face Value Exchange Monitor — Browser-first configuration
 # =============================================================================
 
-# ---- Ticketmaster API ----
-# Get a FREE API key:
-#   1. Go to https://developer.ticketmaster.com/
-#   2. Sign up for an account
-#   3. Go to "My Apps", create a new app
-#   4. Copy the "Consumer Key" — that's your API key
-#      (The Consumer Secret is NOT needed)
-# Rate limits: 5 requests/second, 5,000 requests/day
-ticketmaster:
-  api_key: "YOUR_API_KEY_HERE"
-
-# ---- Discord Webhook ----
-# Create a webhook:
-#   1. Open Discord, go to your server
-#   2. Server Settings > Integrations > Webhooks
-#   3. Click "New Webhook", name it, pick a channel
-#   4. Click "Copy Webhook URL" and paste below
 discord:
   webhook_url: "YOUR_WEBHOOK_URL_HERE"
-  username: "Ticketmaster"         # Display name in Discord
-  ping_user_id: ""                 # Discord user ID to @mention for ticket alerts (e.g. "206908742770360320")
-                                   # Find yours: Discord > Settings > Advanced > Enable Developer Mode,
-                                   # then right-click your name and "Copy User ID". Leave empty to disable pings.
+  username: "Ticketmaster"
+  ping_user_id: ""  # Optional user id to @mention on ticket alerts
 
-# ---- Events to Monitor ----
-# These are the two Tame Impala "Deadbeat Tour" shows at TD Garden.
-# event_id is the Discovery API ID (NOT the legacy ID from the website URL).
-# The website URL is kept as a fallback link for Discord notifications.
 events:
   - event_id: "Za5ju3rKuqZDexDqkBlMyehlJWXnwBnVa-"
     name: "Tame Impala - The Deadbeat Tour (Night 1)"
@@ -41,39 +18,75 @@ events:
     date: "2026-07-29"
     url: "https://www.ticketmaster.com/tame-impala-the-deadbeat-tour-boston-massachusetts-07-29-2026/event/01006444D7AFFD78"
 
-# ---- Polling Intervals ----
-# Two tiers to stay well under the 5,000/day API budget:
-#   daytime: 8 AM – 1 AM ET (active hours, more frequent)
-#   overnight: 1 AM – 8 AM ET (less frequent)
-# With 2 API calls per cycle (one Discovery API call per event), polling every
-# 30 seconds during daytime uses ~4,250 calls/day, well within the 5,000 limit.
+browser:
+  storage_state_path: "secrets/tm_storage_state.json"
+  session_mode: "storage_state"  # storage_state | persistent_profile | cdp_attach
+  user_data_dir: "secrets/tm_profile"
+  channel: "chrome"
+  cdp_endpoint_url: "http://127.0.0.1:9222"
+  cdp_connect_timeout_seconds: 10
+  reuse_event_tabs: true
+  poll_min_seconds: 45
+  poll_max_seconds: 60
+  headless: true
+  poll_interval_seconds: 12
+  poll_jitter_seconds: 2
+  event_stagger_seconds: 6
+  navigation_timeout_seconds: 20
+  challenge_threshold: 5
+  challenge_retry_seconds: 60
+
+browser_host:
+  enabled: true
+  chrome_executable_path: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  user_data_dir: "secrets/tm_chrome_profile"
+  remote_debugging_port: 9222
+
+alerts:
+  ticket_cooldown_seconds: 180
+  operational_heartbeat_hours: 6
+  event_check_stale_seconds: 180
+  operational_state_cooldown_seconds: 1800
+
 polling:
-  daytime_interval_seconds: 30       # Every 30 seconds during active hours
-  overnight_interval_seconds: 300    # Every 5 minutes overnight
-  daytime_start_hour: 8             # 8 AM ET
-  daytime_end_hour: 1               # 1 AM ET (next day)
-  backoff_multiplier: 1.5           # Multiply interval by this on errors
-  max_backoff_seconds: 600          # Cap backoff at 10 minutes
-  timezone: "US/Eastern"            # Venue timezone
+  timezone: "US/Eastern"
+  backoff_multiplier: 2.0
+  max_backoff_seconds: 120
 
-# ---- Notification Settings ----
-notifications:
-  notify_on_status_change: true     # Alert when event goes onsale/offsale
-  daily_heartbeat_hour: 9           # Send daily heartbeat at 9 AM ET
-  daily_recap_hour: 23              # Send daily recap at 11 PM ET
+self_heal:
+  browser_restart_threshold: 3
+  browser_restart_window_seconds: 600
+  process_restart_threshold: 6
+  process_restart_window_seconds: 1800
+  error_alert_cooldown_seconds: 1800
 
-# ---- Optional Features ----
-# Page checker (Tier 3): Fetches the Ticketmaster event page HTML to extract
-# embedded JSON for richer data. This is critical for detecting Face Value
-# Exchange listings, which often don't change the Discovery API status.
-# May get blocked by anti-bot systems on some requests (handled gracefully).
-optional:
-  enable_page_check: true
-  page_check_interval_multiplier: 3  # Run page check every 3rd cycle (~90 seconds)
+auth:
+  auto_login_enabled: false
+  keychain_service: "tame-impala-ticket-monitor"
+  keychain_email_account: "ticketmaster-email"
+  keychain_password_account: "ticketmaster-password"
+  max_auto_login_attempts_per_hour: 3
+  auto_login_cooldown_seconds: 1800
+  session_health_check_interval_seconds: 3600  # Proactively verify auth every hour
+  session_health_check_url: "https://www.ticketmaster.com/my-account"
 
-# ---- Logging ----
-# level: DEBUG, INFO, WARNING, ERROR
-# file: Path to log file (relative to project root)
+watchdog:
+  enabled: true
+  interval_seconds: 120
+  stale_after_seconds: 180
+  max_fix_attempts_per_hour: 6
+
+updates:
+  enabled: true
+  interval_seconds: 60
+  stability_delay_seconds: 20
+  watch_globs:
+    - "monitor.py"
+    - "src/**/*.py"
+    - "config.yaml"
+    - "requirements.txt"
+    - "pyproject.toml"
+
 logging:
   level: "INFO"
   file: "logs/monitor.log"

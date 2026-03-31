@@ -1,8 +1,11 @@
 """Discord webhook notification sender."""
 
+from __future__ import annotations
+
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from dateutil import tz
 
@@ -14,6 +17,14 @@ logger = logging.getLogger(__name__)
 COLOR_GREEN = 0x00FF00    # Test notification / success
 COLOR_BLUE = 0x3498DB      # Status change / informational
 COLOR_RED = 0xE74C3C       # Error or back to sold out
+COLOR_ORANGE = 0xF39C12    # Available but not a target match
+
+MAX_CONTENT_LEN = 1900
+MAX_TITLE_LEN = 256
+MAX_DESC_LEN = 4000
+MAX_FIELD_NAME_LEN = 256
+MAX_FIELD_VALUE_LEN = 1000
+MAX_FOOTER_LEN = 200
 
 class DiscordNotifier:
     """Sends formatted notifications to a Discord webhook."""
@@ -96,6 +107,187 @@ class DiscordNotifier:
         }
         return self._send(embeds=[embed], content=self.ping_user_id, retries=2)
 
+    def send_ticket_available(
+        self,
+        event_name: str,
+        event_date: str,
+        event_url: str,
+        signal_type: str,
+        signal_confidence: float,
+        price_summary: str | None,
+        section_summary: str | None,
+        reason: str,
+        listing_summary: str | None = None,
+        listing_groups: list[dict[str, Any]] | None = None,
+        mention: bool = True,
+    ) -> bool:
+        """Notify when browser probe detects available inventory."""
+        match = self._ticket_match_status(listing_groups)
+        source_label = self._signal_source_label(signal_type)
+        confidence_label = self._confidence_label(signal_confidence)
+        trigger_label = self._trigger_label(reason)
+
+        detail_lines = [
+            f"Match status: **{match['label']}**",
+            f"Detection source: **{source_label}**",
+            (
+                f"Confidence: **{signal_confidence:.2f} ({confidence_label})** "
+                "(higher means stronger evidence from the page/network data)"
+            ),
+            f"Why this alert fired: **{trigger_label}**",
+        ]
+        matched_group = match.get("matched_group")
+        if isinstance(matched_group, dict):
+            detail_lines.append(
+                "Matched listing: "
+                f"{matched_group['section']} / Row {matched_group['row']} / "
+                f"${matched_group['price']:.2f} x{matched_group['count']}"
+            )
+        if match.get("unknown_row"):
+            detail_lines.append(
+                "Adjacency note: row data is missing in Ticketmaster payload; "
+                "seat adjacency confidence is lower."
+            )
+        if price_summary:
+            detail_lines.append(f"Price range: **{price_summary}**")
+        if section_summary:
+            detail_lines.append(f"Sections: {section_summary}")
+        if listing_summary:
+            detail_lines.append(f"Listings: {listing_summary}")
+
+        embed = {
+            "title": f"Tickets Available: {event_name}",
+            "url": event_url,
+            "color": int(match["color"]),
+            "description": "\n".join(detail_lines),
+            "fields": [
+                {"name": "Date", "value": self._format_event_date(event_date), "inline": True},
+                {
+                    "name": "Action",
+                    "value": f"[Open Ticketmaster Now]({event_url})",
+                    "inline": False,
+                },
+            ],
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        content = self._ticket_preview_content(
+            mention=mention,
+            event_name=event_name,
+            preview_status=str(match["preview_status"]),
+        )
+        return self._send(embeds=[embed], content=content, retries=2)
+
+    def send_monitor_blocked(
+        self,
+        event_name: str,
+        message: str,
+        *,
+        context: dict | None = None,
+        auto_fix_planned: str | None = None,
+        manual_required: bool = False,
+    ) -> bool:
+        """Notify when the monitor is in a blind/blocked outage state."""
+        monitor_doing = self._auto_fix_plan_label(auto_fix_planned) or (
+            "The monitor will keep retrying checks and self-healing in the background."
+        )
+        user_action = (
+            "No action needed right now unless this repeats for several minutes."
+            if not manual_required
+            else "Manual action is required now."
+        )
+        description = self._build_guided_description(
+            what_happened=message,
+            monitor_doing=monitor_doing,
+            user_action=user_action,
+            include_technical=True,
+            alert_code="monitor_outage",
+            action=None,
+            reason=message,
+            context=context,
+        )
+        embed = {
+            "title": f"Monitor Outage: {event_name}",
+            "color": COLOR_RED,
+            "description": description,
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        content = self.ping_user_id if self._should_ping(manual_required) else ""
+        return self._send(embeds=[embed], content=content, retries=1)
+
+    def send_monitor_recovered(self, event_name: str, message: str) -> bool:
+        """Notify when monitor recovers from outage state."""
+        embed = {
+            "title": f"Monitor Recovered: {event_name}",
+            "color": COLOR_BLUE,
+            "description": message,
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        return self._send(embeds=[embed], retries=1)
+
+    def send_auto_fix_action(
+        self,
+        action: str,
+        reason: str,
+        *,
+        context: dict | None = None,
+        auto_fix_planned: str | None = None,
+        manual_required: bool = False,
+    ) -> bool:
+        """Notify when an automatic remediation action has been executed."""
+        what_happened, default_monitor_doing, default_user_action = self._auto_fix_action_guidance(action)
+        monitor_doing = self._auto_fix_plan_label(auto_fix_planned) or default_monitor_doing
+        description = self._build_guided_description(
+            what_happened=what_happened,
+            monitor_doing=monitor_doing,
+            user_action=default_user_action,
+            include_technical=True,
+            alert_code="auto_fix_action",
+            action=action,
+            reason=reason,
+            context=context,
+        )
+        embed = {
+            "title": "Auto-fix Action Taken",
+            "color": COLOR_BLUE,
+            "description": description,
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        content = self.ping_user_id if self._should_ping(manual_required) else ""
+        return self._send(embeds=[embed], content=content, retries=1)
+
+    def send_critical_attention(
+        self,
+        message: str,
+        *,
+        context: dict | None = None,
+        manual_required: bool = True,
+        next_steps: list[str] | None = None,
+    ) -> bool:
+        """Notify when automation cannot recover and manual intervention is needed."""
+        description = self._build_guided_description(
+            what_happened=message,
+            monitor_doing="Automatic recovery is paused or no longer enough.",
+            user_action=self._manual_action_text(next_steps),
+            include_technical=True,
+            alert_code="critical_attention",
+            action=None,
+            reason=message,
+            context=context,
+        )
+        embed = {
+            "title": "Critical Attention Needed",
+            "color": COLOR_RED,
+            "description": description,
+            "footer": {"text": "Face Value Exchange Monitor"},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        content = self.ping_user_id if self._should_ping(manual_required) else ""
+        return self._send(embeds=[embed], content=content, retries=1)
+
     def send_sold_out_again(self, event_name: str, event_date: str, event_url: str) -> bool:
         """Notify when an event goes back to sold out / offsale."""
         embed = {
@@ -112,21 +304,33 @@ class DiscordNotifier:
 
         return self._send(embeds=[embed])
 
-    def send_heartbeat(self, daily_calls: int, uptime_hours: float,
-                       last_check: datetime | None) -> bool:
-        """Send a daily heartbeat to confirm the monitor is alive."""
+    def send_heartbeat(self, uptime_hours: float,
+                       last_check: datetime | None,
+                       event_statuses: list[dict] | None = None) -> bool:
+        """Send a periodic heartbeat to confirm the monitor is alive."""
         last_check_str = last_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET") if last_check else "Never"
-        daily_reset = "Midnight UTC"
+
+        fields = []
+        for es in (event_statuses or []):
+            raw_check = es.get("last_check")
+            check_str = (
+                raw_check.astimezone(tz.gettz("US/Eastern")).strftime("%I:%M %p ET")
+                if raw_check else "Never"
+            )
+            fields.append({
+                "name": es["name"],
+                "value": f"{es['status']} | Last check: {check_str}",
+                "inline": False,
+            })
 
         embed = {
             "title": "Monitor Heartbeat",
             "color": COLOR_BLUE,
             "description": (
-                f"API calls used today: **{daily_calls}** / 5,000\n"
-                f"Next reset: {daily_reset}\n"
                 f"Uptime: **{uptime_hours:.1f} hours**\n"
                 f"Last successful check: **{last_check_str}**"
             ),
+            "fields": fields,
             "footer": {"text": "Face Value Exchange Monitor"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -140,7 +344,7 @@ class DiscordNotifier:
             "color": COLOR_GREEN,
             "description": (
                 "Your Ticketmaster Face Value Exchange monitor is configured correctly.\n\n"
-                "You will receive alerts here when tickets matching your criteria appear."
+                "You will receive alerts here when any tickets are detected for your configured event nights."
             ),
             "fields": [
                 {"name": "Webhook", "value": "Working", "inline": True},
@@ -152,7 +356,7 @@ class DiscordNotifier:
 
         return self._send(embeds=[embed])
 
-    def send_daily_recap(self, event_summaries: list[dict], daily_calls: int) -> bool:
+    def send_daily_recap(self, event_summaries: list[dict]) -> bool:
         """Send a daily 11PM recap summarizing the day's monitoring activity."""
         lines = []
         for summary in event_summaries:
@@ -169,7 +373,6 @@ class DiscordNotifier:
                 lines.append(f"**{name}**: Status: **{current_status}**. No price data today.")
 
         description = "\n".join(lines)
-        description += f"\n\nAPI calls used today: **{daily_calls}** / 5,000"
 
         embed = {
             "title": "Daily Recap",
@@ -181,28 +384,51 @@ class DiscordNotifier:
 
         return self._send(embeds=[embed])
 
-    def send_error(self, message: str) -> bool:
+    def send_error(
+        self,
+        message: str,
+        *,
+        context: dict | None = None,
+        manual_required: bool = False,
+        next_steps: list[str] | None = None,
+    ) -> bool:
         """Send an error notification."""
+        user_action = (
+            self._manual_action_text(next_steps)
+            if manual_required
+            else "No action needed right now unless this keeps repeating."
+        )
+        description = self._build_guided_description(
+            what_happened=message,
+            monitor_doing="The monitor will retry with backoff and self-healing.",
+            user_action=user_action,
+            include_technical=True,
+            alert_code="monitor_error",
+            action=None,
+            reason=message,
+            context=context,
+        )
         embed = {
             "title": "Monitor Error",
             "color": COLOR_RED,
-            "description": message,
+            "description": description,
             "footer": {"text": "Face Value Exchange Monitor"},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
-        return self._send(embeds=[embed])
+        content = self.ping_user_id if self._should_ping(manual_required) else ""
+        return self._send(embeds=[embed], content=content)
 
     # ---- Internal ----
 
     def _send(self, embeds: list[dict], content: str = "", retries: int = 0) -> bool:
         """Send a webhook payload to Discord, with optional retries on transient failures."""
+        sanitized_embeds = self._sanitize_embeds(embeds)
         payload = {
             "username": self.username,
-            "embeds": embeds,
+            "embeds": sanitized_embeds,
         }
         if content:
-            payload["content"] = content
+            payload["content"] = self._truncate(content, MAX_CONTENT_LEN)
 
         for attempt in range(retries + 1):
             try:
@@ -228,3 +454,366 @@ class DiscordNotifier:
 
         return False
 
+    def _sanitize_embeds(self, embeds: list[dict]) -> list[dict]:
+        sanitized = []
+        for embed in embeds[:10]:
+            if not isinstance(embed, dict):
+                continue
+            e = dict(embed)
+            if "title" in e:
+                e["title"] = self._truncate(str(e["title"]), MAX_TITLE_LEN)
+            if "description" in e:
+                e["description"] = self._truncate(str(e["description"]), MAX_DESC_LEN)
+
+            fields = []
+            for field in e.get("fields", [])[:25]:
+                if not isinstance(field, dict):
+                    continue
+                name = self._truncate(str(field.get("name", "")), MAX_FIELD_NAME_LEN)
+                value = self._truncate(str(field.get("value", "")), MAX_FIELD_VALUE_LEN)
+                fields.append({
+                    "name": name or "Detail",
+                    "value": value or "-",
+                    "inline": bool(field.get("inline", False)),
+                })
+            if fields:
+                e["fields"] = fields
+            elif "fields" in e:
+                del e["fields"]
+
+            footer = e.get("footer")
+            if isinstance(footer, dict) and "text" in footer:
+                e["footer"] = {"text": self._truncate(str(footer["text"]), MAX_FOOTER_LEN)}
+
+            sanitized.append(e)
+        return sanitized or [{
+            "title": "Monitor Message",
+            "description": "A notification was generated but had no valid embed payload.",
+            "color": COLOR_RED,
+        }]
+
+    @staticmethod
+    def _truncate(value: str, max_len: int) -> str:
+        if len(value) <= max_len:
+            return value
+        if max_len <= 3:
+            return value[:max_len]
+        return value[: max_len - 3] + "..."
+
+    @staticmethod
+    def _format_event_date(event_date: str) -> str:
+        try:
+            dt = datetime.strptime(event_date, "%Y-%m-%d")
+            return dt.strftime("%A, %B %-d, %Y")
+        except ValueError:
+            try:
+                dt = datetime.fromisoformat(event_date)
+                return dt.strftime("%A, %B %-d, %Y")
+            except ValueError:
+                return event_date
+
+    @staticmethod
+    def _signal_source_label(signal_type: str) -> str:
+        mapping = {
+            "dom": "Page UI signals",
+            "network": "Ticket inventory network responses",
+            "dom+network": "Both page UI and network inventory signals",
+            "none": "No positive availability signal",
+            "synthetic": "Synthetic test signal",
+        }
+        return mapping.get(signal_type, signal_type)
+
+    @staticmethod
+    def _confidence_label(value: float) -> str:
+        if value >= 0.9:
+            return "very high"
+        if value >= 0.75:
+            return "high"
+        if value >= 0.5:
+            return "medium"
+        return "low"
+
+    @staticmethod
+    def _trigger_label(reason: str) -> str:
+        mapping = {
+            "signature_changed": "New inventory pattern detected",
+            "cooldown_elapsed": "Reminder after cooldown window",
+            "attention_burst": "Attention burst reminder",
+            "manual_test": "Manual test alert",
+            "not_available": "No availability (should not alert)",
+            "deduped": "Duplicate signal suppressed",
+        }
+        return mapping.get(reason, reason)
+
+    @staticmethod
+    def _coerce_price(value: Any) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = value.strip().replace("$", "").replace(",", "")
+            if not cleaned:
+                return None
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _coerce_count(value: Any) -> int:
+        if isinstance(value, bool):
+            return 1
+        if isinstance(value, int):
+            return max(1, value)
+        if isinstance(value, float):
+            return max(1, int(value))
+        if isinstance(value, str):
+            cleaned = value.strip().replace(",", "")
+            if not cleaned:
+                return 1
+            try:
+                return max(1, int(float(cleaned)))
+            except ValueError:
+                return 1
+        return 1
+
+    @classmethod
+    def _normalized_listing_groups(cls, listing_groups: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+        if not isinstance(listing_groups, list):
+            return []
+
+        normalized: list[dict[str, Any]] = []
+        for raw in listing_groups:
+            if not isinstance(raw, dict):
+                continue
+            price = cls._coerce_price(raw.get("price"))
+            if price is None or price <= 0:
+                continue
+
+            section = str(raw.get("section", "")).strip().upper()
+            row = str(raw.get("row", "")).strip() or "?"
+            count = cls._coerce_count(raw.get("count"))
+            normalized.append(
+                {
+                    "section": section,
+                    "row": row,
+                    "price": round(price, 2),
+                    "count": count,
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _best_match_group(groups: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not groups:
+            return None
+        return sorted(
+            groups,
+            key=lambda item: (
+                -int(item.get("count", 0)),
+                float(item.get("price", 0.0)),
+                str(item.get("section", "")),
+                str(item.get("row", "")),
+            ),
+        )[0]
+
+    @classmethod
+    def _ticket_match_status(cls, listing_groups: list[dict[str, Any]] | None) -> dict[str, Any]:
+        groups = cls._normalized_listing_groups(listing_groups)
+        type_1 = [
+            group
+            for group in groups
+            if "LOGE" in str(group.get("section", "")).upper()
+            and int(group.get("count", 0)) >= 4
+            and float(group.get("price", 0.0)) <= 220.0
+        ]
+        if type_1:
+            matched = cls._best_match_group(type_1)
+            return {
+                "label": "BINGO (4+ LOGE seats <= $220)",
+                "preview_status": "BINGO",
+                "color": COLOR_GREEN,
+                "matched_group": matched,
+                "unknown_row": isinstance(matched, dict) and str(matched.get("row", "")) == "?",
+            }
+
+        type_2 = [
+            group
+            for group in groups
+            if int(group.get("count", 0)) >= 3 and float(group.get("price", 0.0)) < 125.0
+        ]
+        if type_2:
+            matched = cls._best_match_group(type_2)
+            return {
+                "label": "BINGO (3+ seats < $125)",
+                "preview_status": "BINGO",
+                "color": COLOR_GREEN,
+                "matched_group": matched,
+                "unknown_row": isinstance(matched, dict) and str(matched.get("row", "")) == "?",
+            }
+
+        return {
+            "label": "Not a match yet for either group",
+            "preview_status": "Not a match yet",
+            "color": COLOR_ORANGE,
+            "matched_group": None,
+            "unknown_row": False,
+        }
+
+    def _ticket_preview_content(self, *, mention: bool, event_name: str, preview_status: str) -> str:
+        if not mention:
+            return ""
+        line = f"Tickets Available: {event_name} — {preview_status}"
+        if self.ping_user_id:
+            return f"{self.ping_user_id} {line}"
+        return line
+
+    def _build_guided_description(
+        self,
+        *,
+        what_happened: str,
+        monitor_doing: str,
+        user_action: str,
+        include_technical: bool,
+        alert_code: str,
+        action: str | None,
+        reason: str | None,
+        context: dict | None,
+    ) -> str:
+        sections = [
+            f"**What happened**\n{what_happened}",
+            f"**What monitor is doing**\n{monitor_doing}",
+            f"**What you should do**\n{user_action}",
+        ]
+        if include_technical:
+            technical = self._technical_block(
+                alert_code=alert_code,
+                action=action,
+                reason=reason,
+                context=context,
+            )
+            if technical:
+                sections.append(f"**Technical**\n{technical}")
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _should_ping(manual_required: bool) -> bool:
+        return bool(manual_required)
+
+    @staticmethod
+    def _manual_action_text(next_steps: list[str] | None) -> str:
+        if not next_steps:
+            return "Manual action required now. Run `scripts/monitorctl.sh status` and `scripts/monitorctl.sh logs`."
+        commands = "\n".join(f"`{step}`" for step in next_steps)
+        return f"Run these commands now:\n{commands}"
+
+    @staticmethod
+    def _auto_fix_plan_label(auto_fix_planned: str | None) -> str | None:
+        if not auto_fix_planned:
+            return None
+        mapping = {
+            "browser_recycle_now": (
+                "Automatic fix in progress: browser recycle now; "
+                "service-level watchdog may restart process if health stays stale."
+            ),
+            "probe_reload_after_reauth": "Automatic fix in progress: reloading browser probe with refreshed auth session.",
+            "retry_auto_reauth": "Automatic fix in progress: monitor will retry auto re-login while attempt limits allow.",
+            "launchd_restart_expected": "Automatic fix in progress: launchd should restart the monitor process automatically.",
+            "health_recheck": "Automatic fix in progress: watchdog will re-check service health on its next cycle.",
+            "event_poll_stale_recycle": "Automatic fix in progress: recycling browser context after stale event checks.",
+        }
+        return mapping.get(auto_fix_planned)
+
+    @staticmethod
+    def _auto_fix_action_guidance(action: str) -> tuple[str, str, str]:
+        if action == "browser_recycled":
+            return (
+                "The browser context was recycled after repeated blind/error checks.",
+                "The monitor will retry checks on the next cycle.",
+                "No action needed right now.",
+            )
+        if action.startswith("kill_playwright_orphans("):
+            return (
+                "The watchdog restarted the monitor and cleaned orphaned browser processes.",
+                "Service health should recover within about one check cycle.",
+                "No action needed right now unless this repeats for several minutes.",
+            )
+        if action == "ticketmaster_reauth_success":
+            return (
+                "Auto re-login succeeded and session state was refreshed.",
+                "The monitor is continuing with the refreshed session.",
+                "No action needed right now.",
+            )
+        if action == "ticketmaster_reauth_failed":
+            return (
+                "Auto re-login attempt failed.",
+                "The monitor may retry auto re-login while within attempt limits.",
+                "No action needed right now unless failures continue.",
+            )
+        if action == "process_restart_requested":
+            return (
+                "The monitor requested a clean process restart after repeated browser errors.",
+                "launchd should restart the process automatically.",
+                "No action needed right now unless the service fails to come back.",
+            )
+        if action == "code_change_restart":
+            return (
+                "A local file change was detected and the monitor was restarted after preflight checks.",
+                "Monitoring will continue with updated code/config.",
+                "No action needed right now.",
+            )
+        return (
+            "An automatic remediation action was executed.",
+            "The monitor is attempting to recover automatically.",
+            "No action needed right now unless this repeats.",
+        )
+
+    def _technical_block(
+        self,
+        *,
+        alert_code: str,
+        action: str | None,
+        reason: str | None,
+        context: dict | None,
+    ) -> str:
+        ctx = context if isinstance(context, dict) else {}
+        lines = [f"alert_code={alert_code}"]
+        lines.append(f"action={action or 'none'}")
+        if reason:
+            lines.append(f"reason={reason}")
+
+        event_name = ctx.get("event_name")
+        event_id = ctx.get("event_id")
+        if event_name and event_id:
+            lines.append(f"event={event_name} ({event_id})")
+        elif event_name or event_id:
+            lines.append(f"event={event_name or event_id}")
+
+        signal = ctx.get("signal")
+        if signal is not None:
+            lines.append(f"signal={signal}")
+
+        blocked = ctx.get("blocked")
+        challenge = ctx.get("challenge")
+        if blocked is not None or challenge is not None:
+            lines.append(
+                f"blocked={str(bool(blocked)).lower()}/challenge={str(bool(challenge)).lower()}"
+            )
+
+        consecutive = ctx.get("consecutive")
+        if consecutive is not None:
+            lines.append(f"consecutive={consecutive}")
+
+        reason_code = ctx.get("reason_code")
+        if reason_code:
+            lines.append(f"reason_code={reason_code}")
+
+        last_check_age = ctx.get("last_check_age_seconds")
+        if last_check_age is not None:
+            lines.append(f"last_check_age_seconds={last_check_age}")
+
+        stale_threshold = ctx.get("stale_threshold_seconds")
+        if stale_threshold is not None:
+            lines.append(f"stale_threshold_seconds={stale_threshold}")
+
+        return "\n".join(lines)
